@@ -1,0 +1,15 @@
+# dbt
+dbt/hdh_dbt/target/
+dbt/hdh_dbt/dbt_packages/
+dbt/hdh_dbt/logs/
+logs/
+
+# python
+__pycache__/
+*.pyc
+
+# local
+.DS_Store
+.env
+.env.*
+!.env.example

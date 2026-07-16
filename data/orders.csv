@@ -1,0 +1,11 @@
+order_id,customer_id,product,category,quantity,unit_price,status,order_ts
+1001,C001,Ban phim co,accessory,2,45.00,completed,2026-07-01T09:12:00
+1002,C002,Chuot khong day,accessory,1,25.50,completed,2026-07-01T10:03:00
+1003,C001,Man hinh 27inch,display,1,320.00,completed,2026-07-02T14:20:00
+1004,C003,Laptop 14inch,computer,1,1250.00,cancelled,2026-07-02T15:45:00
+1005,C004,Tai nghe,accessory,3,60.00,completed,2026-07-03T08:30:00
+1006,C002,Ban phim co,accessory,1,45.00,pending,2026-07-03T11:10:00
+1007,C005,Laptop 16inch,computer,1,1890.00,completed,2026-07-04T16:00:00
+1008,C003,Chuot khong day,accessory,2,25.50,completed,2026-07-04T17:22:00
+1009,C001,Webcam,accessory,1,55.00,completed,2026-07-05T09:00:00
+1010,C006,Man hinh 27inch,display,2,320.00,completed,2026-07-05T13:37:00

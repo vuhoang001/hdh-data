@@ -1,0 +1,13 @@
+hdh_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      method: none          # Trino chạy không auth trong môi trường học
+      user: admin
+      host: trino           # tên service trong docker-compose
+      port: 8080
+      database: iceberg     # = catalog "iceberg" của Trino
+      schema: analytics     # namespace/schema dbt sẽ build model vào
+      threads: 4
+      http_scheme: http

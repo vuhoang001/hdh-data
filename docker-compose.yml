@@ -1,0 +1,125 @@
+name: hdh-data
+
+# ---------------------------------------------------------------------------
+# Pipeline ETL học tập:  MinIO -> Iceberg (REST catalog) -> Spark -> Trino -> dbt
+#   - minio          : object storage (S3) lưu file dữ liệu Iceberg
+#   - mc             : job khởi tạo bucket "warehouse" rồi thoát
+#   - iceberg-rest   : REST catalog quản lý metadata bảng Iceberg
+#   - trino          : engine truy vấn SQL (đọc/ghi Iceberg)
+#   - spark          : chạy pipeline ETL (PySpark)
+#   - dbt            : transform + test dữ liệu (chạy qua Trino)
+# ---------------------------------------------------------------------------
+
+services:
+  # ----------------------- Object storage (S3) -----------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: hdh-minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console -> http://localhost:9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DOMAIN: minio
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [hdh]
+
+  # Tạo bucket warehouse rồi thoát (chạy 1 lần)
+  mc:
+    image: minio/mc:latest
+    container_name: hdh-mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/${WAREHOUSE_BUCKET} &&
+      mc anonymous set public local/${WAREHOUSE_BUCKET} &&
+      echo '>> Bucket ${WAREHOUSE_BUCKET} san sang' &&
+      exit 0
+      "
+    networks: [hdh]
+
+  # ----------------------- Iceberg REST catalog ----------------------------
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.9.2
+    container_name: hdh-iceberg-rest
+    depends_on:
+      mc:
+        condition: service_completed_successfully
+    ports:
+      - "8181:8181"
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      CATALOG_WAREHOUSE: s3://${WAREHOUSE_BUCKET}/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+    networks: [hdh]
+
+  # ----------------------- Trino (SQL query engine) ------------------------
+  trino:
+    image: trinodb/trino:latest
+    container_name: hdh-trino
+    depends_on:
+      - iceberg-rest
+    ports:
+      - "8080:8080"   # Trino UI / JDBC -> http://localhost:8080
+    volumes:
+      - ./trino/etc/catalog:/etc/trino/catalog:ro
+    networks: [hdh]
+
+  # ----------------------- Spark (ETL engine) ------------------------------
+  spark:
+    build:
+      context: ./spark
+      args:
+        ICEBERG_VERSION: ${ICEBERG_VERSION}
+    image: hdh-spark:local
+    container_name: hdh-spark
+    depends_on:
+      - iceberg-rest
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+      - ./data:/opt/spark/data:ro
+    # Giữ container sống để exec spark-submit vào
+    command: ["tail", "-f", "/dev/null"]
+    networks: [hdh]
+
+  # ----------------------- dbt (transform + test) --------------------------
+  dbt:
+    build:
+      context: ./dbt
+    image: hdh-dbt:local
+    container_name: hdh-dbt
+    depends_on:
+      - trino
+    volumes:
+      - ./dbt/hdh_dbt:/usr/app/hdh_dbt
+      - ./dbt/profiles.yml:/root/.dbt/profiles.yml:ro
+    working_dir: /usr/app/hdh_dbt
+    command: ["tail", "-f", "/dev/null"]
+    networks: [hdh]
+
+volumes:
+  minio-data:
+
+networks:
+  hdh:
+    name: hdh-net

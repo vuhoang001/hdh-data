@@ -1,0 +1,12 @@
+version: 2
+
+sources:
+  - name: raw
+    database: iceberg      # catalog Trino
+    schema: raw            # namespace Spark đã ghi vào
+    tables:
+      - name: orders
+        description: "Đơn hàng thô do Spark ingest từ CSV vào Iceberg"
+        columns:
+          - name: order_id
+            tests: [not_null, unique]

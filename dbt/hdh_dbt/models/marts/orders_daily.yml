@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: orders_daily
+    description: "Tổng hợp doanh thu theo ngày (mart layer)"
+    columns:
+      - name: order_date
+        tests:
+          - not_null
+          - unique
+      - name: revenue
+        description: "Doanh thu trong ngày, phải > 0"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
