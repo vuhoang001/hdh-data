@@ -248,6 +248,47 @@ Nguyên tắc rút gọn: **bronze mô tả, silver mới quyết định.**
 **Tại sao tên cột có dấu `_` đầu?** Quy ước của repo: `_` đánh dấu **cột kỹ thuật**, không
 phải dữ liệu business. Nhờ đó silver biết chắc cột nào cần bỏ đi.
 
+#### Rule tốt: ràng buộc chéo cột
+
+Rule mạnh nhất không phải "cột này không được rỗng" mà là **quan hệ giữa các cột không được
+phá vỡ**, vì đây là thứ bắt được lỗi mà kiểm tra từng cột riêng lẻ không thấy:
+
+| Job | Rule | Tại sao chắc chắn là lỗi |
+|---|---|---|
+| `shipments` | `delivery_date < ship_date` | Giao trước khi gửi là bất khả thi về vật lý |
+| `web_traffic` | `unique_visitors > sessions` | Một người vào nhiều phiên được; một phiên không thể nhiều người |
+| `web_traffic` | `page_views < sessions` | Mỗi phiên xem ít nhất 1 trang |
+| `inventory` | `month != month(snapshot_date)` | `month` là cột dẫn xuất; lệch nghĩa là nguồn tính sai |
+| `promotions` | `end_date < start_date` | Khoảng thời gian rỗng, khuyến mãi không bao giờ chạy |
+| `promotions` | `promo_type='percentage' and discount_value > 100` | Giảm quá 100% = trả tiền cho khách để họ mua |
+
+Rule `inventory.month` đáng chú ý: nếu nguồn tính sai cột `month`, mọi report nhóm theo
+`year`/`month` sẽ ra số sai **mà không có gì báo lỗi**. Cột dẫn xuất sẵn trong nguồn luôn
+đáng nghi — hãy kiểm tra lại nó bằng chính cột gốc.
+
+#### Lỗi dữ liệu hay sự thật kinh doanh?
+
+Không phải cái gì bất thường cũng là lỗi. `sales.csv` có **382/3833 ngày (10%) bán lỗ**
+(`cogs > revenue`). Gắn cờ `_is_valid = false` cho chúng là sai, vì hai lý do:
+
+- **10% là quá nhiều để gọi là lỗi.** Lỗi dữ liệu thật thường hiếm; một "lỗi" chiếm 10% số
+  dòng gần như luôn là hiện tượng thật mà ta chưa hiểu.
+- **Silver sẽ vứt chúng đi**, và report doanh thu mất 10% số ngày — sai lệch lớn hơn nhiều
+  so với việc giữ lại.
+
+Cách xử lý trong `ingest_sales_daily.py`: cho ra **một cột riêng**, không đụng tới `_is_valid`.
+
+```python
+.withColumn("_margin_negative", F.col("cogs") > F.col("revenue"))
+```
+
+Giờ thông tin đó phân tích được (`where _margin_negative`) thay vì bị vứt. So sánh với
+`products`, cũng cùng điều kiện `cogs > price` nhưng ở đó **0 dòng vi phạm** — hiếm nên gắn
+cờ lỗi là hợp lý.
+
+**Cùng một điều kiện, hai cách xử lý khác nhau, quyết định bởi dữ liệu thật.** Đây là lý do
+[bước 0](#bước-0--xem-trước-dữ-liệu-nguồn) phải xem dữ liệu trước khi viết rule.
+
 #### `partition_columns()` — chia file để query nhanh
 
 ```python
@@ -268,11 +309,18 @@ lúc import — trước khi `build_spark_session()` được gọi — và job 
 
 **Cách chọn:**
 
+**Cách chọn — mục tiêu là file cỡ vài MB, không phải vài chục KB:**
+
 | Tình huống | Cách làm | Ví dụ trong repo |
 |---|---|---|
-| Có cột ngày, dữ liệu trải nhiều năm | `[F.months("cột_ngày")]` | `orders` |
-| Không có cột ngày | `[F.bucket(N, "khoá_join")]` | `order_items` |
-| Bảng dimension nhỏ (vài nghìn dòng) | `None` | `products` |
+| Bảng lớn (>500k dòng), có cột ngày | `[F.months("cột_ngày")]` | `orders`, `shipments` |
+| Bảng vừa (40k–150k dòng), có cột ngày | `[F.years("cột_ngày")]` | `customers`, `reviews`, `returns`, `inventory` |
+| Không có cột ngày | `[F.bucket(N, "khoá_join")]` | `order_items`, `payments` |
+| Bảng dimension nhỏ (dưới ~40k dòng) | `None` | `products`, `promotions`, `geography`, `sales_daily`, `web_traffic` |
+
+Số dòng chỉ là chỉ dấu; thứ thực sự quyết định là **kích thước mỗi partition**. Lấy dung
+lượng file chia cho số partition dự kiến: dưới ~1MB một partition thì chọn hạt thô hơn
+(`months` → `years`, hoặc bỏ partition hẳn).
 
 **Tại sao `orders` partition theo tháng chứ không theo ngày?** ~650k dòng trải 2012–2023.
 Theo ngày sẽ tạo ~3800 partition, mỗi file vài chục KB. File quá nhỏ là phản tác dụng: engine
@@ -286,6 +334,39 @@ lại giữa các máy (*shuffle*).
 
 **Tại sao bảng nhỏ thì `None`?** Partition một bảng 2000 dòng chỉ tạo ra hàng loạt file tí
 hon, chậm hơn là để nguyên một file.
+
+**Tại sao `customers` dùng `years` mà `orders` dùng `months`?** Cả hai đều trải 2012–2023,
+nhưng `orders` có 647k dòng (44MB) còn `customers` chỉ 122k dòng (6.8MB). Chia `customers`
+theo tháng ra ~140 partition × 50KB — quá vụn. Theo năm còn ~11 partition × 600KB, hợp lý
+hơn. **Cùng khoảng thời gian nhưng khác kích thước thì chọn khác nhau.**
+
+### Đổi tên cột: khi nào được phép
+
+Bronze giữ nguyên nguồn, nhưng **tên cột là ngoại lệ có chủ ý**. Hai job trong repo đổi tên:
+
+| Nguồn | Bronze | Lý do |
+|---|---|---|
+| `sales.csv`: `Date, Revenue, COGS` | `sale_date, revenue, cogs` | `Date` trùng từ khoá SQL; repo dùng snake_case |
+| `web_traffic.csv`: `date` | `traffic_date` | `date` vừa là từ khoá vừa là tên kiểu dữ liệu |
+
+Cột tên `date` hay `Date` thì mọi câu query đều phải quote (`"date"`), rất dễ quên và gây lỗi
+khó hiểu. Đổi một lần ở bronze rẻ hơn là chịu đựng nó ở mọi model phía sau.
+
+**Cách đổi:** chỉ cần đặt tên mới trong `SCHEMA`. Spark áp schema **theo thứ tự cột** và bỏ
+qua tên trong header (`enforceSchema` mặc định `true`).
+
+> **Cái giá phải trả:** vì khớp theo vị trí chứ không theo tên, nếu nguồn đổi thứ tự cột thì
+> dữ liệu vào nhầm cột **mà không có lỗi nào báo** — `revenue` nhận giá trị `cogs`. Với file
+> tĩnh 3 cột thì rủi ro chấp nhận được; với nguồn hay thay đổi thì nên đọc bằng tên gốc rồi
+> `withColumnRenamed()` sau, để nguồn đổi cột là job fail ngay.
+
+Sau khi ingest, **luôn đối chiếu vài dòng đầu với file gốc** để chắc dữ liệu vào đúng cột:
+
+```bash
+head -2 data/sales.csv
+docker compose exec trino trino --catalog iceberg --execute \
+  "SELECT sale_date, revenue, cogs FROM bronze.sales_daily ORDER BY sale_date LIMIT 1;"
+```
 
 ### Phần 3: Orchestration — copy y nguyên
 

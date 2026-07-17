@@ -40,8 +40,8 @@ cd ~/learn/hdh-data
 make up
 make ps          # đợi tới khi trino/spark/dbt ở trạng thái "Up"
 
-# 2) Ingest: Spark đọc CSV -> bảng Iceberg trong iceberg.bronze
-make ingest                # toàn bộ bảng; hoặc make ingest-orders / make ingest-order-items
+# 2) Ingest: Spark đọc CSV -> 13 bảng Iceberg trong iceberg.bronze (~2 phút)
+make ingest                # toàn bộ; hoặc từng bảng: make ingest-orders, make ingest-products, ...
 
 # 3) Transform + Test: dbt build silver + gold, chạy các test dữ liệu
 make dbt-deps    # cài dbt_utils (chạy 1 lần)
@@ -55,6 +55,8 @@ make query
 
 ## Tài liệu
 
+- [Mô hình dữ liệu](docs/mo-hinh-du-lieu.md) — sơ đồ quan hệ 13 bảng, lực lượng từng liên kết,
+  công thức join đúng và các bẫy làm ra số sai. **Đọc trước khi viết query join.**
 - [Thêm một bảng mới vào pipeline](docs/them-bang-moi.md) — hướng dẫn từng bước từ CSV tới
   gold, kèm quy ước cho từng layer và các lỗi hay gặp.
 
@@ -103,9 +105,20 @@ hdh-data/
 │       │   ├── session.py
 │       │   ├── io.py
 │       │   └── iceberg.py
-│       └── bronze/             # mỗi bảng 1 job, tự giữ logic của mình
+│       └── bronze/             # mỗi bảng 1 job, tự giữ logic của mình (13 job)
 │           ├── ingest_orders.py
-│           └── ingest_order_items.py
+│           ├── ingest_order_items.py
+│           ├── ingest_customers.py
+│           ├── ingest_geography.py
+│           ├── ingest_products.py
+│           ├── ingest_payments.py
+│           ├── ingest_shipments.py
+│           ├── ingest_returns.py
+│           ├── ingest_reviews.py
+│           ├── ingest_promotions.py
+│           ├── ingest_inventory.py
+│           ├── ingest_sales_daily.py
+│           └── ingest_web_traffic.py
 ├── docs/
 │   └── them-bang-moi.md        # hướng dẫn thêm bảng mới
 └── dbt/
@@ -127,8 +140,29 @@ dùng được, gold **trả lời** câu hỏi business.
 
 - **bronze** — Spark ingest CSV, chuẩn hoá text, gắn cờ `_is_valid` + metadata audit. Giữ
   nguyên số dòng nguồn, không lọc bỏ gì (để luôn truy ngược được về dữ liệu gốc).
-  - `iceberg.bronze.orders` — đơn hàng
-  - `iceberg.bronze.order_items` — dòng hàng
+  **13 bảng, mỗi bảng 1 job trong `spark/jobs/bronze/`:**
+
+  | Bảng | Nguồn | Dòng | Loại |
+  |---|---|---:|---|
+  | `orders` | orders.csv | 646,945 | fact |
+  | `order_items` | order_items.csv | 714,669 | fact |
+  | `payments` | payments.csv | 646,945 | fact (1 đơn 1 dòng) |
+  | `shipments` | shipments.csv | 566,067 | fact |
+  | `reviews` | reviews.csv | 113,551 | fact |
+  | `returns` | returns.csv | 39,939 | fact |
+  | `inventory` | inventory.csv | 60,247 | snapshot tồn kho theo tháng |
+  | `customers` | customers.csv | 121,930 | dimension |
+  | `geography` | geography.csv | 39,948 | dimension (zip → city/region) |
+  | `products` | products.csv | 2,412 | dimension |
+  | `promotions` | promotions.csv | 50 | dimension |
+  | `sales_daily` | sales.csv | 3,833 | **doanh thu ngày tổng hợp sẵn** — xem ghi chú dưới |
+  | `web_traffic` | web_traffic.csv | 3,652 | lưu lượng web theo ngày |
+
+  > **`sales_daily` không khớp với doanh thu tính từ `order_items`** (2022-12-31: 2,383,037 vs
+  > 2,015,982). Đây là hai nguồn số độc lập; chênh lệch là thứ cần điều tra, đừng "sửa" cho khớp.
+  >
+  > `sample_submission.csv` **không** được ingest: đó là template nộp kết quả dự báo cho 548
+  > ngày tương lai (2023-01-01 → 2024-07-01), không phải dữ liệu nguồn.
 - **silver** — dbt lọc theo `_is_valid`, bỏ cột kỹ thuật, thêm cột dẫn xuất. Là **view** vì
   chỉ lọc/đổi tên nên rẻ, và luôn phản ánh bronze mới nhất.
   - `iceberg.analytics.silver_orders`
