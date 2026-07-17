@@ -15,6 +15,7 @@ nó**, chứ không chỉ đưa code để copy.
 - [Bước 4 — Model silver](#bước-4--model-silver)
 - [Bước 5 — Model gold](#bước-5--model-gold)
 - [Chạy](#chạy)
+- [Chạy lại job — ghi đè, snapshot, time travel](#chạy-lại-job--ghi-đè-snapshot-time-travel)
 - [Truy vấn](#truy-vấn)
 - [Lỗi hay gặp](#lỗi-hay-gặp)
 
@@ -399,8 +400,8 @@ Từng hàm gọi từ `common/` làm gì:
 - **`write_iceberg_table(df, table, partition_columns())`** — ghi bằng `createOrReplace()`,
   tức **ghi đè toàn bộ bảng**. Nghĩa là job **idempotent**: chạy 1 lần hay 10 lần đều ra kết
   quả y hệt, không nhân đôi dữ liệu. Đây là lý do bạn có thể vô tư `make ingest` lại khi nghi
-  ngờ. (Đổi lại, nó không làm incremental — nạp thêm dữ liệu mới mà giữ dữ liệu cũ. Với dataset
-  học tập vài trăm nghìn dòng thì ghi đè đơn giản hơn và luôn đúng.)
+  ngờ — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) để hiểu chuyện gì thực
+  sự xảy ra bên dưới.
 
 **Tại sao ở cuối lại log số dòng?** Để biết job có thực sự làm gì không. `total = 714669,
 invalid = 0` nói lên nhiều hơn dòng chữ "thành công": nếu hôm nào đó `total` tụt còn 300k,
@@ -748,6 +749,89 @@ docker compose exec trino trino --catalog iceberg --execute "SHOW TABLES FROM an
 
 ---
 
+## Chạy lại job — ghi đè, snapshot, time travel
+
+**Chạy `make ingest` hai lần có nhân đôi dữ liệu không? Không.** Job ghi đè toàn bộ bảng, nên
+chạy bao nhiêu lần cũng ra kết quả y hệt. Bạn có thể vô tư ingest lại khi nghi ngờ dữ liệu.
+
+Thí nghiệm thật trên `bronze.promotions` (50 dòng), chạy `ingest-promotions` hai lần:
+
+| | Số dòng | `_ingested_at` | Số snapshot |
+|---|---:|---|---:|
+| Sau lần 1 | 50 | 07:41:22 | 1 |
+| Sau lần 2 | **50** (không phải 100) | **08:00:38** | **2** |
+
+Số dòng giữ nguyên → ghi đè, không cộng thêm. `_ingested_at` đổi → dữ liệu thật sự được viết
+lại. Nhưng **số snapshot tăng lên 2** — đó là phần đáng biết.
+
+### Vì sao idempotent: createOrReplace
+
+Nằm ở `spark/jobs/common/iceberg.py`:
+
+```python
+writer.tableProperty("format-version", "2").createOrReplace()
+```
+
+`createOrReplace` = "tạo mới nếu chưa có, **thay thế toàn bộ** nếu đã có". Không có bước kiểm
+tra dòng nào đã tồn tại — cả bảng bị viết lại từ đầu. Đơn giản, và luôn đúng.
+
+### Dữ liệu cũ không biến mất: time travel
+
+Iceberg không xoá phiên bản cũ khi ghi đè; nó tạo một **snapshot** mới và giữ lại cái cũ. Xem
+lịch sử:
+
+```sql
+SELECT snapshot_id, committed_at, operation, summary['total-records'] AS so_dong
+FROM bronze."promotions$snapshots" ORDER BY committed_at;
+```
+
+```
+9057656408815972620 | 2026-07-17 07:41:24 | overwrite | 50
+3885891985372690357 | 2026-07-17 08:00:41 | overwrite | 50
+```
+
+Và đọc lại được phiên bản cũ bằng `FOR VERSION AS OF`:
+
+```sql
+SELECT count(*), max(_ingested_at) FROM bronze.promotions
+FOR VERSION AS OF 9057656408815972620;
+-- 50 dòng, _ingested_at = 07:41:22  <- trạng thái TRƯỚC khi ghi đè
+```
+
+**Tại sao điều này hữu ích?** Lỡ chạy job với rule sai và ghi đè mất bảng tốt: bạn so sánh
+được ngay trước/sau, hoặc rollback. Không có time travel thì lần ghi đè hỏng là mất dữ liệu
+vĩnh viễn — và đây chính là lý do ghi đè toàn bộ mà vẫn an toàn.
+
+### Cái giá: file cũ vẫn nằm trên MinIO
+
+Snapshot cũ còn đọc được nghĩa là **file dữ liệu cũ vẫn chiếm chỗ**, không tự xoá.
+
+| Bảng | Kích thước | Chạy lại 10 lần tốn |
+|---|---:|---:|
+| `promotions` | 5 KB | ~50 KB — không đáng kể |
+| `orders` | 44 MB | **~440 MB** |
+
+Bảng chỉ hiển thị một phiên bản, nhưng đĩa thì giữ tất cả. Với dataset học tập, cách dọn đơn
+giản nhất là `make clean` (xoá sạch volume MinIO) rồi ingest lại. Iceberg cũng có thủ tục
+`expire_snapshots` để xoá snapshot cũ hơn một mốc thời gian, nhưng ở quy mô này thì chưa cần.
+
+### Cảnh báo: điều này KHÔNG đúng với append
+
+Nếu sau này bạn đổi sang **incremental** — nạp thêm dữ liệu mới mà giữ dữ liệu cũ — thì tính
+idempotent biến mất:
+
+| Cách ghi | Chạy lại lần 2 | An toàn? |
+|---|---|---|
+| `createOrReplace()` (hiện tại) | Thay toàn bộ → vẫn 50 dòng | ✅ |
+| `append()` | Cộng thêm → **100 dòng** | ❌ nhân đôi |
+| `MERGE INTO` theo khoá | Cập nhật dòng trùng, thêm dòng mới | ✅ |
+
+Ghi đè toàn bộ chỉ khả thi khi dữ liệu đủ nhỏ để viết lại hết trong vài giây — đúng với repo
+này (bảng lớn nhất 714k dòng, ~6 giây). Khi bảng lên hàng trăm triệu dòng thì không còn khả
+thi, lúc đó phải chuyển sang `MERGE INTO` và tự lo chuyện idempotent.
+
+---
+
 ## Truy vấn
 
 **Tên bảng luôn có 3 cấp: `catalog.schema.table`.**
@@ -835,5 +919,7 @@ WHERE o.order_id IS NULL;
 | `make ingest` không chạy gì, báo "up to date" | Target thiếu trong `.PHONY`, Make tưởng là tên file | Thêm target vào `.PHONY` |
 | `missing separator` trong Makefile | Thụt dòng bằng space | Thay bằng Tab |
 | Model dbt không được build | File `.sql` sai thư mục | Đặt trong `models/silver/` hoặc `models/gold/` |
+| MinIO phình to dù số dòng không đổi | Mỗi lần ingest lại tạo snapshot mới, file cũ không tự xoá | `make clean` rồi ingest lại — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) |
+| Ingest lại xong số dòng nhân đôi | Đã đổi sang `append()` thay vì `createOrReplace()` | Dùng `MERGE INTO` hoặc quay lại ghi đè |
 | `revenue` ra `NULL` | `NULL` lây qua phép tính | `coalesce(cột, 0)` trước khi tính |
 | Số đơn ở gold lớn bất thường | Dùng `count(*)` sau join thay vì `count(distinct order_id)` | Xem [Bước 5](#bước-5--model-gold) |
