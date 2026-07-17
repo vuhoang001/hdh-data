@@ -15,6 +15,7 @@ nó**, chứ không chỉ đưa code để copy.
 - [Bước 4 — Model silver](#bước-4--model-silver)
 - [Bước 5 — Model gold](#bước-5--model-gold)
 - [Chạy](#chạy)
+- [Pipeline có HAI bước tách rời](#pipeline-có-hai-bước-tách-rời)
 - [Chạy lại job — ghi đè, snapshot, time travel](#chạy-lại-job--ghi-đè-snapshot-time-travel)
 - [Truy vấn](#truy-vấn)
 - [Lỗi hay gặp](#lỗi-hay-gặp)
@@ -749,6 +750,90 @@ docker compose exec trino trino --catalog iceberg --execute "SHOW TABLES FROM an
 
 ---
 
+## Pipeline có HAI bước tách rời
+
+**`make ingest` KHÔNG chạy silver và gold.** Nó chỉ chạy 13 job Spark ghi vào bronze, hết.
+
+```
+make ingest  ->  Spark  ->  bronze           (13 lệnh spark-submit)
+make dbt     ->  dbt    ->  silver + gold    (1 lệnh dbt build)
+```
+
+Hai công cụ khác nhau, hai container khác nhau, hai lệnh khác nhau. Không có gì tự động nối
+chúng lại — bạn phải chạy cả hai.
+
+### Vì sao silver TRÔNG NHƯ tự cập nhật, còn gold thì không
+
+Vì **silver là view, gold là table**:
+
+```sql
+SELECT table_name, table_type FROM information_schema.tables WHERE table_schema='analytics';
+```
+
+```
+silver_orders       VIEW
+silver_customers    VIEW
+dim_promotion       BASE TABLE
+fact_order_items    BASE TABLE
+gold_revenue_daily  BASE TABLE
+```
+
+**View không chứa dữ liệu — nó chỉ là một câu SQL được lưu lại.** Mỗi lần bạn
+`SELECT * FROM silver_promotions`, Trino chạy lại `select ... from bronze.promotions where
+_is_valid` **ngay lúc đó**, nên nó luôn phản ánh bronze mới nhất.
+
+**Table thì chứa dữ liệu thật**, là kết quả đã tính sẵn từ lần `dbt build` gần nhất. Bronze
+đổi thì table **không biết** — vẫn giữ số cũ cho tới khi bạn chạy `make dbt`.
+
+### Thí nghiệm chứng minh
+
+Tạm bớt `promotions.csv` từ 50 xuống 45 dòng, **chỉ chạy ingest, không chạy dbt**:
+
+| Bảng | Loại | Số dòng | Nhận xét |
+|---|---|---:|---|
+| `bronze.promotions` | table | 45 | Spark vừa ghi |
+| `silver_promotions` | **VIEW** | **45** | ✅ đúng ngay, không cần build |
+| `dim_promotion` | **TABLE** | **51** | ❌ **dữ liệu cũ** (50 + NO_PROMO) |
+
+Sau khi chạy `make dbt`, `dim_promotion` mới thành 46 (45 + NO_PROMO).
+
+Quy tắc này khai báo ở `dbt_project.yml`:
+
+```yaml
+models:
+  hdh_dbt:
+    silver:
+      +materialized: view    # rẻ, luôn tươi
+    gold:
+      +materialized: table   # đắt, tính 1 lần, PHẢI build lại
+```
+
+> **Đây là loại lỗi im lặng nguy hiểm:** sau `make ingest` mà quên `make dbt`, silver đúng
+> nhưng gold sai — và gold mới là thứ bạn làm report. Không có báo lỗi nào, chỉ có số cũ.
+> **Nhớ: ingest xong luôn dbt.**
+
+### Chạy lại cái gì, khi nào
+
+| Bạn vừa sửa gì | Chạy lệnh |
+|---|---|
+| File `.sql` / `.yml` trong `dbt/` | `make dbt` |
+| Job Spark trong `spark/jobs/` hoặc file CSV | `make ingest-<bảng>` **rồi** `make dbt` |
+| Dựng lại từ đầu sau `make clean` | `make up` → `make ingest` → `make dbt` |
+| Không sửa gì, chỉ muốn xem dữ liệu | không cần chạy gì — `make trino` |
+
+### Thí nghiệm này còn lộ ra 2 điều
+
+**Spark bỏ qua file bắt đầu bằng `_` hoặc `.`** Lần đầu file demo đặt tên `_demo_promotions.csv`
+và job đọc ra **0 dòng** với cảnh báo `WARN DataSource: All paths were ignored`. Đây là quy ước
+Hadoop: file có tiền tố `_`/`.` bị coi là metadata ẩn. Nếu ingest ra 0 dòng mà không hiểu vì
+sao, nhìn tên file trước tiên.
+
+**Test `relationships` bắt được lỗi thật.** Khi bronze chỉ còn 45 khuyến mãi, `fact_order_items`
+có **14.538 dòng** trỏ tới `promo_key` không còn tồn tại trong `dim_promotion`, và test fail
+đúng như phải thế. Bộ test không phải trang trí — nó vừa chặn đứng một bảng fact hỏng.
+
+---
+
 ## Chạy lại job — ghi đè, snapshot, time travel
 
 **Chạy `make ingest` hai lần có nhân đôi dữ liệu không? Không.** Job ghi đè toàn bộ bảng, nên
@@ -920,6 +1005,8 @@ WHERE o.order_id IS NULL;
 | `missing separator` trong Makefile | Thụt dòng bằng space | Thay bằng Tab |
 | Model dbt không được build | File `.sql` sai thư mục | Đặt trong `models/silver/` hoặc `models/gold/` |
 | MinIO phình to dù số dòng không đổi | Mỗi lần ingest lại tạo snapshot mới, file cũ không tự xoá | `make clean` rồi ingest lại — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) |
+| Ingest ra **0 dòng**, log báo `All paths were ignored` | Tên file bắt đầu bằng `_` hoặc `.` — Spark coi là metadata ẩn | Đổi tên file, bỏ tiền tố |
+| Gold vẫn ra số cũ sau khi ingest | Gold là `table`, không tự cập nhật như silver (`view`) | Chạy `make dbt` — xem [Pipeline hai bước](#pipeline-có-hai-bước-tách-rời) |
 | Ingest lại xong số dòng nhân đôi | Đã đổi sang `append()` thay vì `createOrReplace()` | Dùng `MERGE INTO` hoặc quay lại ghi đè |
 | `revenue` ra `NULL` | `NULL` lây qua phép tính | `coalesce(cột, 0)` trước khi tính |
 | Số đơn ở gold lớn bất thường | Dùng `count(*)` sau join thay vì `count(distinct order_id)` | Xem [Bước 5](#bước-5--model-gold) |

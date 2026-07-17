@@ -3,6 +3,10 @@
 Tài liệu này giải thích star schema trong `models/gold/`: **mỗi bảng để làm gì, mỗi quyết định
 vì sao chọn thế**. Mọi con số đều lấy từ dữ liệu thật.
 
+> **Cần lý thuyết nền?** Đọc [Star schema — lý thuyết thiết kế](star-schema-ly-thuyet.md):
+> quy trình 4 bước Kimball, bus matrix, 4 loại fact, 3 loại số đo, 5 loại dimension, SCD.
+> Tài liệu này nói *thiết kế hiện tại ra sao*; tài liệu kia nói *vì sao lại thiết kế thế*.
+
 Xem thêm: [Mô hình dữ liệu](mo-hinh-du-lieu.md) (quan hệ 13 bảng bronze) ·
 [Thêm bảng mới](them-bang-moi.md) (cách viết job/model).
 
@@ -391,8 +395,13 @@ Ba loại fact còn thiếu, mỗi loại dạy một khái niệm khác:
 | Fact | Loại | Hạt | Khái niệm mới |
 |---|---|---|---|
 | `fact_returns` | transaction | một lần trả | Dùng lại `dim_date`/`dim_product` — *conformed dimension* |
-| `fact_orders` | **accumulating snapshot** | một đơn | Nhiều mốc thời gian trên một dòng: `order_date` → `ship_date` → `delivery_date`, đo được thời gian giữa các mốc. Gộp `orders` + `shipments` |
+| `fact_orders` | **accumulating snapshot** | một đơn | Nhiều mốc thời gian trên một dòng: `order_date` → `ship_date` → `delivery_date`, đo được thời gian giữa các mốc. Gộp `orders` + `shipments`. Cũng là ví dụ *role-playing dimension* — `dim_date` đóng 3 vai |
 | `fact_inventory` | **periodic snapshot** | sản phẩm × tháng | Số đo **semi-additive**: `stock_on_hand` cộng được theo sản phẩm nhưng **không cộng được theo thời gian** (tồn tháng 1 + tồn tháng 2 ≠ gì cả) |
+
+Bốn loại fact và khi nào dùng loại nào: xem
+[lý thuyết](star-schema-ly-thuyet.md#bốn-loại-bảng-fact). Thứ tự nên làm thì đọc
+[bus matrix](star-schema-ly-thuyet.md#bus-matrix--bản-đồ-toàn-cảnh) — nó cho biết quy trình
+nào tận dụng được nhiều dimension có sẵn nhất.
 
 **Conformed dimension** là ý tưởng đáng giá nhất khi mở rộng: `fact_returns` dùng *đúng*
 `dim_product` và `dim_date` của `fact_order_items`. Nhờ đó "doanh thu theo category" và "trả

@@ -57,6 +57,8 @@ make query
 
 - [Star schema](docs/star-schema.md) — thiết kế dim/fact ở gold layer, năm quyết định thiết kế
   và lý do, query mẫu. **Đọc trước khi phân tích dữ liệu.**
+- [Star schema — lý thuyết thiết kế](docs/star-schema-ly-thuyet.md) — quy trình 4 bước Kimball,
+  bus matrix, 4 loại fact, 3 loại số đo, 5 loại dimension, SCD, bridge table.
 - [Mô hình dữ liệu](docs/mo-hinh-du-lieu.md) — sơ đồ quan hệ 13 bảng, lực lượng từng liên kết,
   công thức join đúng và các bẫy làm ra số sai. **Đọc trước khi viết query join.**
 - [Thêm một bảng mới vào pipeline](docs/them-bang-moi.md) — hướng dẫn từng bước từ CSV tới
