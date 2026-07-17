@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: dim_product
+    description: >
+      Dimension sản phẩm. Cột giá mang tiền tố current_ vì chúng là giá niêm yết HIỆN TẠI,
+      không phải giá đã bán — dùng fact_order_items.unit_price để tính doanh thu.
+    columns:
+      - name: product_id
+        description: "Khoá tự nhiên. Mỗi sản phẩm đúng 1 dòng"
+        tests:
+          - not_null
+          - unique
+      - name: product_name
+        tests:
+          - not_null
+      - name: category
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["casual", "genz", "outdoor", "streetwear"]
+      - name: size
+        tests:
+          - accepted_values:
+              values: ["s", "m", "l", "xl"]
+      - name: current_list_price
+        description: "Giá niêm yết hiện tại. KHÔNG dùng tính doanh thu — chỉ 0,01% khớp giá bán thật"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: current_list_margin
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0

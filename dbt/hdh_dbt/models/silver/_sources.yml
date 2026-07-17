@@ -11,7 +11,7 @@ sources:
           - name: order_id
             tests: [not_null, unique]
           
-      - name: order_items 
+      - name: order_items
         description: "Dòng hàng bronze: Giữ nguyên số dòng nguồn, có cờ chất lượng"
         columns:
           - name: order_id
@@ -20,6 +20,32 @@ sources:
           - name: product_id
             tests:
               - not_null
+
+      - name: customers
+        description: "Khách hàng Bronze. customer_id là khoá chính (121.930/121.930 unique)"
+        columns:
+          - name: customer_id
+            tests: [not_null, unique]
+          - name: zip
+            tests: [not_null]
+
+      - name: geography
+        description: "Tra cứu zip -> city/region/district. zip là khoá chính (39.948 unique)"
+        columns:
+          - name: zip
+            tests: [not_null, unique]
+
+      - name: products
+        description: "Sản phẩm Bronze. LƯU Ý: price là giá NIÊM YẾT HIỆN TẠI, không phải giá bán lịch sử"
+        columns:
+          - name: product_id
+            tests: [not_null, unique]
+
+      - name: promotions
+        description: "Chương trình khuyến mãi. applicable_category NULL = áp dụng mọi category"
+        columns:
+          - name: promo_id
+            tests: [not_null, unique]
 
   
 

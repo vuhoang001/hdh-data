@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: dim_promotion
+    description: >
+      Dimension khuyến mãi: 50 chương trình thật + 1 thành viên nhân tạo 'NO_PROMO'.
+      Thành viên nhân tạo để fact không có khoá ngoại NULL, nhờ đó mọi join đều là inner join.
+    columns:
+      - name: promo_id
+        description: "Khoá tự nhiên. 'NO_PROMO' là thành viên nhân tạo, không có trong nguồn"
+        tests:
+          - not_null
+          - unique
+      - name: promo_name
+        tests:
+          - not_null
+      - name: promo_type
+        description: "'none' chỉ dành cho thành viên NO_PROMO"
+        tests:
+          - accepted_values:
+              values: ["fixed", "percentage", "none"]
+      - name: is_stackable
+        tests:
+          - not_null

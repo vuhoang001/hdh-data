@@ -55,6 +55,8 @@ make query
 
 ## Tài liệu
 
+- [Star schema](docs/star-schema.md) — thiết kế dim/fact ở gold layer, năm quyết định thiết kế
+  và lý do, query mẫu. **Đọc trước khi phân tích dữ liệu.**
 - [Mô hình dữ liệu](docs/mo-hinh-du-lieu.md) — sơ đồ quan hệ 13 bảng, lực lượng từng liên kết,
   công thức join đúng và các bẫy làm ra số sai. **Đọc trước khi viết query join.**
 - [Thêm một bảng mới vào pipeline](docs/them-bang-moi.md) — hướng dẫn từng bước từ CSV tới

@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: "Dimension ngày, tự sinh từ date_spine (2012-01-01 → 2022-12-31). Không đến từ dữ liệu nguồn"
+    columns:
+      - name: date_key
+        description: "Khoá chính — mỗi ngày đúng 1 dòng, không thiếu ngày nào"
+        tests:
+          - not_null
+          - unique
+      - name: year
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 2012
+              max_value: 2022
+      - name: quarter
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 4
+      - name: month
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 12
+      - name: day_of_week
+        description: "Trino: 1=thứ 2 ... 7=chủ nhật"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 7
+      - name: is_weekend
+        tests:
+          - not_null

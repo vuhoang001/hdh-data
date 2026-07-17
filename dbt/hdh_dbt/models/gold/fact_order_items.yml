@@ -1,0 +1,77 @@
+version: 2
+
+models:
+  - name: fact_order_items
+    description: >
+      Fact trung tâm của star schema. HẠT: một dòng = một dòng hàng trong một đơn (714.669 dòng).
+      Khoá ngoại: date_key, customer_key, product_key, promo_key. Degenerate: order_id và các
+      thuộc tính đơn. Số đo additive: quantity, gross_amount, discount_amount, net_amount.
+    # Test hạt (số dòng fact phải khớp silver) nằm ở tests/assert_fact_order_items_grain.sql
+    # — viết tay vì dbt_utils.equal_rowcount sinh SQL không chạy được trên Trino.
+    columns:
+      # --- Khoá ngoại: không cái nào được NULL, tất cả phải tồn tại trong dimension ---
+      - name: date_key
+        description: "-> dim_date.date_key"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: customer_key
+        description: "-> dim_customer.customer_id"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_id
+      - name: product_key
+        description: "-> dim_product.product_id"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_product')
+              field: product_id
+      - name: promo_key
+        description: "-> dim_promotion.promo_id. Không bao giờ NULL nhờ coalesce(promo_id, 'NO_PROMO')"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_promotion')
+              field: promo_id
+
+      # --- Degenerate dimension ---
+      - name: order_id
+        description: "Khoá nghiệp vụ. KHÔNG unique — một đơn có nhiều dòng hàng"
+        tests:
+          - not_null
+      - name: order_status
+        tests:
+          - accepted_values:
+              values: ["created", "paid", "shipped", "delivered", "returned", "cancelled"]
+
+      # --- Số đo ---
+      - name: quantity
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: gross_amount
+        description: "quantity * unit_price, trước giảm giá"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+      - name: net_amount
+        description: "gross_amount - discount_amount. Đây là doanh thu thật"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+      - name: unit_price
+        description: "Giá TẠI THỜI ĐIỂM GIAO DỊCH. NON-ADDITIVE — chỉ dùng với avg(), không sum()"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false

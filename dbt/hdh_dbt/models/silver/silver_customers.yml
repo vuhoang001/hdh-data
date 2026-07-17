@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: silver_customers
+    description: "Khách hàng đã làm sạch (silver layer)"
+    columns:
+      - name: customer_id
+        description: "Khoá chính"
+        tests:
+          - not_null
+          - unique
+      - name: zip
+        tests:
+          - not_null
+          - relationships:
+              to: ref('silver_geography')
+              field: zip
+      - name: gender
+        tests:
+          - accepted_values:
+              values: ["female", "male", "non-binary"]
+      - name: age_group
+        tests:
+          - accepted_values:
+              values: ["18-24", "25-34", "35-44", "45-54", "55+"]
+      - name: acquisition_channel
+        tests:
+          - accepted_values:
+              values: ["direct", "email_campaign", "organic_search", "paid_search", "referral", "social_media"]
+      - name: signup_date
+        tests:
+          - not_null

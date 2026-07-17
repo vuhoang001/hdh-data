@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: dim_customer
+    description: "Dimension khách hàng, đã gộp phẳng thông tin địa lý từ geography (SCD Type 1)"
+    columns:
+      - name: customer_id
+        description: "Khoá tự nhiên. Mỗi khách đúng 1 dòng"
+        tests:
+          - not_null
+          - unique
+      - name: region
+        description: "Từ geography qua zip. NULL nghĩa là zip không tra được"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["central", "east", "west"]
+      - name: city
+        tests:
+          - not_null
+      - name: gender
+        tests:
+          - accepted_values:
+              values: ["female", "male", "non-binary"]
+      - name: acquisition_channel
+        tests:
+          - accepted_values:
+              values: ["direct", "email_campaign", "organic_search", "paid_search", "referral", "social_media"]
+      - name: signup_year
+        tests:
+          - not_null

@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: silver_geography
+    description: "Tra cứu địa lý theo zip (silver layer)"
+    columns:
+      - name: zip
+        description: "Khoá chính — mỗi zip đúng 1 dòng"
+        tests:
+          - not_null
+          - unique
+      - name: city
+        tests:
+          - not_null
+      - name: region
+        tests:
+          - accepted_values:
+              values: ["central", "east", "west"]

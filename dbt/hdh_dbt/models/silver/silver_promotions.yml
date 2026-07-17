@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: silver_promotions
+    description: "Khuyến mãi đã làm sạch (silver layer)"
+    columns:
+      - name: promo_id
+        description: "Khoá chính"
+        tests:
+          - not_null
+          - unique
+      - name: promo_type
+        tests:
+          - accepted_values:
+              values: ["fixed", "percentage"]
+      - name: promo_channel
+        tests:
+          - accepted_values:
+              values: ["all_channels", "email", "in_store", "online", "social_media"]
+      - name: discount_value
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: duration_days
+        description: "Số ngày chạy. Âm nghĩa là end_date trước start_date"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+      - name: is_stackable
+        description: "True = cho phép cộng thêm 1 khuyến mãi nữa lên trên"
+        tests:
+          - not_null
