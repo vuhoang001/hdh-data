@@ -12,8 +12,9 @@ clean-targets: ["target", "dbt_packages"]
 models:
   hdh_dbt:
     # Tất cả model build vào schema "analytics" (khai báo ở profiles.yml)
-    # staging -> view, marts -> table (Iceberg)
-    staging:
+    # Spark ghi bronze; dbt lo silver -> gold
+    # silver -> view, gold -> table (Iceberg)
+    silver:
       +materialized: view
-    marts:
+    gold:
       +materialized: table

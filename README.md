@@ -40,10 +40,10 @@ cd ~/learn/hdh-data
 make up
 make ps          # đợi tới khi trino/spark/dbt ở trạng thái "Up"
 
-# 2) Ingest: Spark đọc data/orders.csv -> bảng Iceberg iceberg.raw.orders
+# 2) Ingest: Spark đọc data/orders.csv -> bảng Iceberg iceberg.bronze.orders
 make ingest
 
-# 3) Transform + Test: dbt build staging + marts, chạy các test dữ liệu
+# 3) Transform + Test: dbt build silver + gold, chạy các test dữ liệu
 make dbt-deps    # cài dbt_utils (chạy 1 lần)
 make dbt         # = dbt build (chạy model + test)
 
@@ -55,7 +55,7 @@ make query
 
 ## Kiểm tra thủ công
 
-**MinIO console:** http://localhost:9001 — user `admin` / pass `password123`
+**MinIO console:** http://localhost:9001 — dùng `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` trong `.env`
 (sẽ thấy bucket `warehouse` chứa file Iceberg sau khi ingest).
 
 **Trino CLI:**
@@ -64,9 +64,9 @@ make trino
 ```
 ```sql
 SHOW SCHEMAS FROM iceberg;
-SELECT * FROM iceberg.raw.orders ORDER BY order_id;
-SELECT * FROM iceberg.analytics.stg_orders;
-SELECT * FROM iceberg.analytics.orders_daily ORDER BY order_date;
+SELECT * FROM iceberg.bronze.orders LIMIT 20;
+SELECT * FROM iceberg.analytics.silver_orders LIMIT 20;
+SELECT * FROM iceberg.analytics.gold_orders_daily ORDER BY order_date LIMIT 20;
 ```
 
 **Spark SQL:**
@@ -74,40 +74,53 @@ SELECT * FROM iceberg.analytics.orders_daily ORDER BY order_date;
 make spark-sql
 ```
 ```sql
-SELECT status, count(*) FROM iceberg.raw.orders GROUP BY status;
+SELECT order_status, count(*) FROM iceberg.bronze.orders GROUP BY order_status;
 ```
 
 ## Cấu trúc thư mục
 
 ```
 hdh-data/
-├── docker-compose.yml          # định nghĩa 5 service
+├── docker-compose.yml          # định nghĩa các service
 ├── .env                        # credential & version dùng chung
 ├── Makefile                    # lệnh tắt (up/ingest/dbt/query)
-├── data/orders.csv             # dữ liệu nguồn mẫu
+├── data/                       # CSV nguồn
+├── iceberg-rest/
+│   └── Dockerfile              # REST catalog + driver Postgres
 ├── trino/etc/catalog/
-│   └── iceberg.properties       # catalog Trino -> REST + MinIO
+│   └── iceberg.properties      # catalog Trino -> REST + MinIO
 ├── spark/
 │   ├── Dockerfile              # Spark 3.5 + jar Iceberg/AWS
 │   ├── conf/spark-defaults.conf # cấu hình catalog Iceberg cho Spark
-│   └── jobs/ingest_orders.py    # job ETL: CSV -> Iceberg
+│   └── jobs/
+│       ├── common/             # CHỈ hạ tầng: session, đọc file, ghi Iceberg
+│       │   ├── session.py
+│       │   ├── io.py
+│       │   └── iceberg.py
+│       └── bronze/             # mỗi bảng 1 job, tự giữ logic của mình
+│           └── ingest_orders.py
 └── dbt/
     ├── Dockerfile              # dbt-core + dbt-trino
     ├── profiles.yml            # kết nối dbt -> Trino
     └── hdh_dbt/                # dbt project (models + tests)
-        ├── models/staging/     # stg_orders (view) + source + tests
-        └── models/marts/       # orders_daily (table) + tests
+        ├── models/silver/      # silver_orders (view) + source + tests
+        └── models/gold/        # gold_orders_daily (table) + tests
 ```
 
+`common/` chỉ chứa phần kỹ thuật dùng lại được (tạo SparkSession, đọc CSV, ghi Iceberg lên
+MinIO). Schema và rule làm sạch của từng bảng nằm trong chính file job ở `bronze/`, nên thêm
+bảng mới = thêm 1 file, không phải sửa `common/`.
+
 ## Layer dữ liệu
-- **raw** (`iceberg.raw.orders`): Spark ghi thẳng từ CSV, phân vùng theo `order_date`.
-- **staging** (`iceberg.analytics.stg_orders`): dbt làm sạch, chuẩn hoá — view.
-- **marts** (`iceberg.analytics.orders_daily`): dbt tổng hợp doanh thu/ngày — table.
+- **bronze** (`iceberg.bronze.orders`): Spark ingest CSV, chuẩn hoá text, gắn cờ `_is_valid` +
+  metadata audit. Giữ nguyên số dòng nguồn, không lọc bỏ gì.
+- **silver** (`iceberg.analytics.silver_orders`): dbt lọc theo `_is_valid`, bỏ cột kỹ thuật — view.
+- **gold** (`iceberg.analytics.gold_orders_daily`): dbt tổng hợp số đơn theo ngày — table.
 
 ## Test dữ liệu (dbt)
 - `not_null`, `unique` cho `order_id`
-- `accepted_values` cho `status` (completed/pending/cancelled)
-- `accepted_range` cho `revenue > 0` (dùng dbt_utils)
+- `accepted_values` cho `order_status` (created/paid/shipped/delivered/returned/cancelled)
+- `accepted_range` cho `num_orders > 0` (dùng dbt_utils)
 
 Chỉ chạy test: `make dbt-test`
 

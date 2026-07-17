@@ -1,0 +1,12 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: iceberg      # catalog Trino
+    schema: bronze         # namespace Spark ghi Bronze layer vào
+    tables:
+      - name: orders
+        description: "Đơn hàng Bronze: text đã chuẩn hoá, giữ nguyên số dòng nguồn, có cờ chất lượng"
+        columns:
+          - name: order_id
+            tests: [not_null, unique]

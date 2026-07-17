@@ -49,13 +49,37 @@ services:
       "
     networks: [hdh]
 
+  # ----------------------- Metastore DB cho Iceberg catalog ----------------
+  # Nơi catalog lưu danh sách namespace/bảng và con trỏ tới metadata file trên MinIO.
+  iceberg-postgres:
+    image: postgres:16-alpine
+    container_name: hdh-iceberg-postgres
+    environment:
+      POSTGRES_DB: ${CATALOG_DB_NAME}
+      POSTGRES_USER: ${CATALOG_DB_USER}
+      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
+    volumes:
+      - iceberg-catalog-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CATALOG_DB_USER} -d ${CATALOG_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [hdh]
+
   # ----------------------- Iceberg REST catalog ----------------------------
   iceberg-rest:
-    image: apache/iceberg-rest-fixture:1.9.2
+    build:
+      context: ./iceberg-rest
+      args:
+        ICEBERG_VERSION: ${ICEBERG_VERSION}
+    image: hdh-iceberg-rest:local
     container_name: hdh-iceberg-rest
     depends_on:
       mc:
         condition: service_completed_successfully
+      iceberg-postgres:
+        condition: service_healthy
     ports:
       - "8181:8181"
     environment:
@@ -66,6 +90,11 @@ services:
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
       CATALOG_S3_ENDPOINT: http://minio:9000
       CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      # Mặc định của image là jdbc:sqlite::memory: -> DB sống theo từng connection,
+      # pool đóng connection là mất sạch bảng đã tạo. Dùng Postgres làm metastore thật.
+      CATALOG_URI: jdbc:postgresql://iceberg-postgres:5432/${CATALOG_DB_NAME}
+      CATALOG_JDBC_USER: ${CATALOG_DB_USER}
+      CATALOG_JDBC_PASSWORD: ${CATALOG_DB_PASSWORD}
     networks: [hdh]
 
   # ----------------------- Trino (SQL query engine) ------------------------
@@ -76,6 +105,10 @@ services:
       - iceberg-rest
     ports:
       - "8080:8080"   # Trino UI / JDBC -> http://localhost:8080
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
     volumes:
       - ./trino/etc/catalog:/etc/trino/catalog:ro
     networks: [hdh]
@@ -94,6 +127,9 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION}
+      # spark-submit chỉ add thư mục chứa script vào sys.path (vd bronze/),
+      # nên phải trỏ thêm vào jobs/ để "from common import ..." thấy package
+      PYTHONPATH: /opt/spark/jobs
     volumes:
       - ./spark/jobs:/opt/spark/jobs:ro
       - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
@@ -119,6 +155,7 @@ services:
 
 volumes:
   minio-data:
+  iceberg-catalog-db:
 
 networks:
   hdh:

@@ -1,0 +1,22 @@
+version: 2
+
+models:
+  - name: silver_orders
+    description: "Đơn hàng đã làm sạch (silver layer)"
+    columns:
+      - name: order_id
+        description: "Khoá chính của đơn hàng"
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        tests:
+          - not_null
+      - name: order_date
+        tests:
+          - not_null
+      - name: order_status
+        description: "Trạng thái đơn (đã chuẩn hoá về chữ thường)"
+        tests:
+          - accepted_values:
+              values: ["created", "paid", "shipped", "delivered", "returned", "cancelled"]

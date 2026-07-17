@@ -18,9 +18,9 @@ ps:            ## Xem trạng thái container
 logs:          ## Xem log
 	docker compose logs -f
 
-# ----- Bước 1: Ingest bằng Spark (CSV -> Iceberg raw.orders) -----
+# ----- Bước 1: Ingest bằng Spark (CSV -> Iceberg bronze.orders) -----
 ingest:
-	docker compose exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/ingest_orders.py
+	docker compose exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/bronze/ingest_orders.py
 
 spark-sql:     ## Mở spark-sql tương tác
 	docker compose exec spark /opt/spark/bin/spark-sql
@@ -29,7 +29,7 @@ spark-sql:     ## Mở spark-sql tương tác
 dbt-deps:
 	docker compose exec dbt dbt deps
 
-dbt:           ## Build model dbt (staging + marts)
+dbt:           ## Build model dbt (silver + gold)
 	docker compose exec dbt dbt build
 
 dbt-test:      ## Chỉ chạy test dữ liệu
@@ -41,4 +41,4 @@ trino:         ## Mở Trino CLI
 
 query:         ## Chạy nhanh 1 câu query mẫu
 	docker compose exec trino trino --catalog iceberg --execute \
-	"SELECT * FROM analytics.orders_daily ORDER BY order_date;"
+	"SELECT * FROM analytics.gold_orders_daily ORDER BY order_date LIMIT 20;"

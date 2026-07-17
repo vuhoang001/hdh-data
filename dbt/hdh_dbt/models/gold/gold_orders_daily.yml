@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: gold_orders_daily
+    description: "Số đơn theo ngày (gold layer)"
+    columns:
+      - name: order_date
+        tests:
+          - not_null
+          - unique
+      - name: num_orders
+        description: "Số đơn trong ngày, phải > 0"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
