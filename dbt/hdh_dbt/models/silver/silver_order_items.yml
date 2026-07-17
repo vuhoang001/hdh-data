@@ -1,0 +1,25 @@
+version: 2
+
+models:
+  - name: silver_order_items
+    description: "Dòng hàng đã làm sạch (silver layer)"
+    columns:
+      - name: order_id
+        description: "Không unique — một đơn có nhiều dòng hàng"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('silver_orders')
+              field: order_id
+      - name: product_id
+        tests:
+          - not_null
+      - name: quantity
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: line_amount
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0

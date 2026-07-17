@@ -1,7 +1,7 @@
 # Các lệnh tắt cho pipeline hdh-data
 # Dùng:  make up  ->  make ingest  ->  make dbt  ->  make query
 
-.PHONY: up down logs ps build ingest spark-sql trino dbt dbt-test dbt-deps query clean
+.PHONY: up down logs ps build ingest ingest-orders ingest-order-items spark-sql trino dbt dbt-test dbt-deps query clean
 
 up:            ## Khởi động toàn bộ stack (build image lần đầu)
 	docker compose up -d --build
@@ -18,9 +18,14 @@ ps:            ## Xem trạng thái container
 logs:          ## Xem log
 	docker compose logs -f
 
-# ----- Bước 1: Ingest bằng Spark (CSV -> Iceberg bronze.orders) -----
-ingest:
+# ----- Bước 1: Ingest bằng Spark (CSV -> Iceberg bronze) -----
+ingest: ingest-orders ingest-order-items   ## Ingest toàn bộ bảng bronze
+
+ingest-orders: ## Chỉ ingest bảng orders
 	docker compose exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/bronze/ingest_orders.py
+
+ingest-order-items: ## Chỉ ingest bảng order_items
+	docker compose exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/bronze/ingest_order_items.py
 
 spark-sql:     ## Mở spark-sql tương tác
 	docker compose exec spark /opt/spark/bin/spark-sql

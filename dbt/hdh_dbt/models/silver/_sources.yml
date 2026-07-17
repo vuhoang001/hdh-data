@@ -10,3 +10,16 @@ sources:
         columns:
           - name: order_id
             tests: [not_null, unique]
+          
+      - name: order_items 
+        description: "Dòng hàng bronze: Giữ nguyên số dòng nguồn, có cờ chất lượng"
+        columns:
+          - name: order_id
+            tests:
+              - not_null
+          - name: product_id
+            tests:
+              - not_null
+
+  
+

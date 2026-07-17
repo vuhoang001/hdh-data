@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: gold_revenue_daily
+    description: "Doanh thu theo ngày (gold layer), tính từ dòng hàng join với đơn"
+    columns:
+      - name: order_date
+        tests:
+          - not_null
+          - unique
+      - name: num_orders
+        description: "Số đơn có ít nhất 1 dòng hàng trong ngày"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: num_units
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: revenue
+        description: "Tổng thành tiền sau chiết khấu"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+      - name: total_discount
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
