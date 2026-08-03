@@ -1,6 +1,6 @@
 -- Silver: chương trình khuyến mãi đã làm sạch.
 with source as (
-    select * from {{ source('bronze', 'promotions') }}
+    select * from {{ bronze('promotions') }}
 )
 
 select

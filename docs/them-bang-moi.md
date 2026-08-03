@@ -4,6 +4,16 @@ Hướng dẫn thêm một bảng đi hết chặng **CSV → bronze → silver 
 làm ví dụ xuyên suốt. Tài liệu giải thích từng thành phần dùng làm gì và **tại sao phải có
 nó**, chứ không chỉ đưa code để copy.
 
+> **Dự án có HAI môi trường** (xem [README](../README.md)). Tài liệu này mô tả đường
+> **Spark + Trino**. Hai điểm cần nhớ khi làm việc với cả hai:
+> 1. **Lệnh `make` mang tiền tố `st-`** cho stack Spark+Trino (`make st-ingest`,
+>    `make st-dbt`, `make st-trino`...). Các lệnh `docker compose ...` bên dưới cần thêm
+>    `-f environments/spark-trino/docker-compose.yml` — hoặc dùng target `st-*` tương ứng.
+> 2. **Để bảng mới chạy được cả ở môi trường DuckDB**, thêm một model
+>    `dbt/hdh_dbt/models/bronze/bronze_<bảng>.sql` đọc CSV (dùng macro `read_source_csv` +
+>    `invalid_reason`, xem các file bronze có sẵn). Silver chỉ cần gọi `{{ bronze('<bảng>') }}`
+>    là tự trỏ đúng nguồn theo môi trường — không phải sửa gì thêm.
+
 ## Mục lục
 
 - [Hiểu kiến trúc trước khi gõ code](#hiểu-kiến-trúc-trước-khi-gõ-code)
@@ -400,7 +410,7 @@ Từng hàm gọi từ `common/` làm gì:
   vào namespace chưa tồn tại sẽ lỗi. Có `IF NOT EXISTS` nên chạy lại nhiều lần vô hại.
 - **`write_iceberg_table(df, table, partition_columns())`** — ghi bằng `createOrReplace()`,
   tức **ghi đè toàn bộ bảng**. Nghĩa là job **idempotent**: chạy 1 lần hay 10 lần đều ra kết
-  quả y hệt, không nhân đôi dữ liệu. Đây là lý do bạn có thể vô tư `make ingest` lại khi nghi
+  quả y hệt, không nhân đôi dữ liệu. Đây là lý do bạn có thể vô tư `make st-ingest` lại khi nghi
   ngờ — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) để hiểu chuyện gì thực
   sự xảy ra bên dưới.
 
@@ -445,8 +455,8 @@ ingest-order-items: ## Chỉ ingest bảng order_items
 ```
 
 **Tại sao mỗi bảng một target riêng, lại còn thêm target gộp?** Hai nhu cầu khác nhau: sửa
-rule của `order_items` thì chỉ cần chạy lại nó (`make ingest-order-items`), tiết kiệm vài
-phút; còn dựng lại từ đầu sau `make clean` thì cần tất cả (`make ingest`).
+rule của `order_items` thì chỉ cần chạy lại nó (`make st-ingest-order-items`), tiết kiệm vài
+phút; còn dựng lại từ đầu sau `make st-clean` thì cần tất cả (`make st-ingest`).
 
 **`ingest: ingest-orders ingest-order-items` nghĩa là gì?** Trong Make, những tên đứng sau
 dấu `:` là **prerequisites** — Make chạy chúng trước, lần lượt. Target `ingest` tự nó không
@@ -600,7 +610,7 @@ nhiều dòng hàng — nên test `unique` ở đây **sẽ fail**. Chỉ đặt
 khoá chính, như `order_id` của bảng `orders`.
 
 **Tại sao `dbt_utils.accepted_range` mà không phải `accepted_range`?** Đây là test từ package
-`dbt_utils` khai báo ở `packages.yml`, phải gọi kèm tên package. Nếu chưa chạy `make dbt-deps`
+`dbt_utils` khai báo ở `packages.yml`, phải gọi kèm tên package. Nếu chưa chạy `make st-dbt-deps`
 thì dbt báo lỗi không tìm thấy macro.
 
 ---
@@ -721,13 +731,13 @@ cho bạn biết một sự thật về dữ liệu.
 ## Chạy
 
 ```bash
-make ingest-order-items    # chỉ chạy job mới (make ingest chạy lại toàn bộ bảng)
-make dbt                   # = dbt build: chạy model + test
+make st-ingest-order-items    # chỉ chạy job mới (make st-ingest chạy lại toàn bộ bảng)
+make st-dbt                   # = dbt build: chạy model + test
 ```
 
 **Tại sao `dbt build` mà không phải `dbt run`?** `dbt run` chỉ tạo model; `dbt build` tạo model
 **và chạy test ngay sau mỗi model**, theo đúng thứ tự phụ thuộc. Nghĩa là nếu silver fail test,
-gold **không được build** từ dữ liệu hỏng đó. Đó là lý do `make dbt` dùng `build`.
+gold **không được build** từ dữ liệu hỏng đó. Đó là lý do `make st-dbt` dùng `build`.
 
 Kết quả mong đợi:
 
@@ -752,11 +762,11 @@ docker compose exec trino trino --catalog iceberg --execute "SHOW TABLES FROM an
 
 ## Pipeline có HAI bước tách rời
 
-**`make ingest` KHÔNG chạy silver và gold.** Nó chỉ chạy 13 job Spark ghi vào bronze, hết.
+**`make st-ingest` KHÔNG chạy silver và gold.** Nó chỉ chạy 13 job Spark ghi vào bronze, hết.
 
 ```
-make ingest  ->  Spark  ->  bronze           (13 lệnh spark-submit)
-make dbt     ->  dbt    ->  silver + gold    (1 lệnh dbt build)
+make st-ingest  ->  Spark  ->  bronze           (13 lệnh spark-submit)
+make st-dbt     ->  dbt    ->  silver + gold    (1 lệnh dbt build)
 ```
 
 Hai công cụ khác nhau, hai container khác nhau, hai lệnh khác nhau. Không có gì tự động nối
@@ -783,7 +793,7 @@ gold_revenue_daily  BASE TABLE
 _is_valid` **ngay lúc đó**, nên nó luôn phản ánh bronze mới nhất.
 
 **Table thì chứa dữ liệu thật**, là kết quả đã tính sẵn từ lần `dbt build` gần nhất. Bronze
-đổi thì table **không biết** — vẫn giữ số cũ cho tới khi bạn chạy `make dbt`.
+đổi thì table **không biết** — vẫn giữ số cũ cho tới khi bạn chạy `make st-dbt`.
 
 ### Thí nghiệm chứng minh
 
@@ -795,7 +805,7 @@ Tạm bớt `promotions.csv` từ 50 xuống 45 dòng, **chỉ chạy ingest, kh
 | `silver_promotions` | **VIEW** | **45** | ✅ đúng ngay, không cần build |
 | `dim_promotion` | **TABLE** | **51** | ❌ **dữ liệu cũ** (50 + NO_PROMO) |
 
-Sau khi chạy `make dbt`, `dim_promotion` mới thành 46 (45 + NO_PROMO).
+Sau khi chạy `make st-dbt`, `dim_promotion` mới thành 46 (45 + NO_PROMO).
 
 Quy tắc này khai báo ở `dbt_project.yml`:
 
@@ -808,7 +818,7 @@ models:
       +materialized: table   # đắt, tính 1 lần, PHẢI build lại
 ```
 
-> **Đây là loại lỗi im lặng nguy hiểm:** sau `make ingest` mà quên `make dbt`, silver đúng
+> **Đây là loại lỗi im lặng nguy hiểm:** sau `make st-ingest` mà quên `make st-dbt`, silver đúng
 > nhưng gold sai — và gold mới là thứ bạn làm report. Không có báo lỗi nào, chỉ có số cũ.
 > **Nhớ: ingest xong luôn dbt.**
 
@@ -816,10 +826,10 @@ models:
 
 | Bạn vừa sửa gì | Chạy lệnh |
 |---|---|
-| File `.sql` / `.yml` trong `dbt/` | `make dbt` |
-| Job Spark trong `spark/jobs/` hoặc file CSV | `make ingest-<bảng>` **rồi** `make dbt` |
-| Dựng lại từ đầu sau `make clean` | `make up` → `make ingest` → `make dbt` |
-| Không sửa gì, chỉ muốn xem dữ liệu | không cần chạy gì — `make trino` |
+| File `.sql` / `.yml` trong `dbt/` | `make st-dbt` |
+| Job Spark trong `spark/jobs/` hoặc file CSV | `make st-ingest-<bảng>` **rồi** `make st-dbt` |
+| Dựng lại từ đầu sau `make st-clean` | `make st-up` → `make st-ingest` → `make st-dbt` |
+| Không sửa gì, chỉ muốn xem dữ liệu | không cần chạy gì — `make st-trino` |
 
 ### Thí nghiệm này còn lộ ra 2 điều
 
@@ -836,7 +846,7 @@ có **14.538 dòng** trỏ tới `promo_key` không còn tồn tại trong `dim_
 
 ## Chạy lại job — ghi đè, snapshot, time travel
 
-**Chạy `make ingest` hai lần có nhân đôi dữ liệu không? Không.** Job ghi đè toàn bộ bảng, nên
+**Chạy `make st-ingest` hai lần có nhân đôi dữ liệu không? Không.** Job ghi đè toàn bộ bảng, nên
 chạy bao nhiêu lần cũng ra kết quả y hệt. Bạn có thể vô tư ingest lại khi nghi ngờ dữ liệu.
 
 Thí nghiệm thật trên `bronze.promotions` (50 dòng), chạy `ingest-promotions` hai lần:
@@ -897,7 +907,7 @@ Snapshot cũ còn đọc được nghĩa là **file dữ liệu cũ vẫn chiế
 | `orders` | 44 MB | **~440 MB** |
 
 Bảng chỉ hiển thị một phiên bản, nhưng đĩa thì giữ tất cả. Với dataset học tập, cách dọn đơn
-giản nhất là `make clean` (xoá sạch volume MinIO) rồi ingest lại. Iceberg cũng có thủ tục
+giản nhất là `make st-clean` (xoá sạch volume MinIO) rồi ingest lại. Iceberg cũng có thủ tục
 `expire_snapshots` để xoá snapshot cũ hơn một mốc thời gian, nhưng ở quy mô này thì chưa cần.
 
 ### Cảnh báo: điều này KHÔNG đúng với append
@@ -951,7 +961,7 @@ hoạt động.
 ### Cách 3 — Spark SQL
 
 ```bash
-make spark-sql
+make st-spark-sql
 ```
 
 **Khi nào dùng Spark thay vì Trino?** Gần như không, cho việc query khám phá — Trino nhanh hơn
@@ -995,18 +1005,18 @@ WHERE o.order_id IS NULL;
 
 | Triệu chứng | Nguyên nhân | Cách sửa |
 |---|---|---|
-| `Table 'bronze.x' does not exist` khi chạy dbt | Chưa chạy job Spark, hoặc `schema:` ở `_sources.yml` không khớp `NAMESPACE` | Chạy `make ingest-<bảng>`; đối chiếu hai chỗ khai báo |
+| `Table 'bronze.x' does not exist` khi chạy dbt | Chưa chạy job Spark, hoặc `schema:` ở `_sources.yml` không khớp `NAMESPACE` | Chạy `make st-ingest-<bảng>`; đối chiếu hai chỗ khai báo |
 | `Compilation Error: source 'bronze.x' not found` | Thiếu mục trong `_sources.yml` | Thêm vào bước 3 |
-| `Compilation Error: macro accepted_range not found` | Chưa cài package | `make dbt-deps` |
+| `Compilation Error: macro accepted_range not found` | Chưa cài package | `make st-dbt-deps` |
 | Test `unique` fail trên bảng fact | Cột không phải khoá chính (một đơn nhiều dòng hàng) | Bỏ test `unique`, giữ `not_null` |
 | Job Spark OOM lúc ghi | Partition quá mịn → hàng nghìn file tí hon | Đổi `F.days()` sang `F.months()`, xem [Chọn partition](#chọn-partition) |
 | `SparkContext should only be created...` | Đặt `F.months()`/`F.bucket()` ở cấp module | Bọc trong hàm `partition_columns()` |
-| `make ingest` không chạy gì, báo "up to date" | Target thiếu trong `.PHONY`, Make tưởng là tên file | Thêm target vào `.PHONY` |
+| `make st-ingest` không chạy gì, báo "up to date" | Target thiếu trong `.PHONY`, Make tưởng là tên file | Thêm target vào `.PHONY` |
 | `missing separator` trong Makefile | Thụt dòng bằng space | Thay bằng Tab |
 | Model dbt không được build | File `.sql` sai thư mục | Đặt trong `models/silver/` hoặc `models/gold/` |
-| MinIO phình to dù số dòng không đổi | Mỗi lần ingest lại tạo snapshot mới, file cũ không tự xoá | `make clean` rồi ingest lại — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) |
+| MinIO phình to dù số dòng không đổi | Mỗi lần ingest lại tạo snapshot mới, file cũ không tự xoá | `make st-clean` rồi ingest lại — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) |
 | Ingest ra **0 dòng**, log báo `All paths were ignored` | Tên file bắt đầu bằng `_` hoặc `.` — Spark coi là metadata ẩn | Đổi tên file, bỏ tiền tố |
-| Gold vẫn ra số cũ sau khi ingest | Gold là `table`, không tự cập nhật như silver (`view`) | Chạy `make dbt` — xem [Pipeline hai bước](#pipeline-có-hai-bước-tách-rời) |
+| Gold vẫn ra số cũ sau khi ingest | Gold là `table`, không tự cập nhật như silver (`view`) | Chạy `make st-dbt` — xem [Pipeline hai bước](#pipeline-có-hai-bước-tách-rời) |
 | Ingest lại xong số dòng nhân đôi | Đã đổi sang `append()` thay vì `createOrReplace()` | Dùng `MERGE INTO` hoặc quay lại ghi đè |
 | `revenue` ra `NULL` | `NULL` lây qua phép tính | `coalesce(cột, 0)` trước khi tính |
 | Số đơn ở gold lớn bất thường | Dùng `count(*)` sau join thay vì `count(distinct order_id)` | Xem [Bước 5](#bước-5--model-gold) |

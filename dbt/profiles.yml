@@ -1,13 +1,26 @@
 hdh_dbt:
-  target: dev
+  # Mặc định chạy môi trường nhẹ DuckDB. Môi trường lakehouse chọn bằng --target trino
+  # (Makefile đã set sẵn cho từng stack).
+  target: duckdb
   outputs:
-    dev:
+
+    # ---- Môi trường 1: DuckDB (nhẹ) — bronze+silver+gold chạy trọn trong 1 file .duckdb ----
+    duckdb:
+      type: duckdb
+      # File warehouse nằm trên volume mount (giữ lại giữa các lần chạy). Xem
+      # environments/duckdb/docker-compose.yml
+      path: /warehouse/hdh.duckdb
+      schema: analytics       # silver/gold vào schema analytics; bronze vào schema bronze
+      threads: 4
+
+    # ---- Môi trường 2: Trino (lakehouse) — silver/gold qua Trino trên Iceberg ----
+    trino:
       type: trino
-      method: none          # Trino chạy không auth trong môi trường học
+      method: none            # Trino chạy không auth trong môi trường học
       user: admin
-      host: trino           # tên service trong docker-compose
+      host: trino             # tên service trong docker-compose spark-trino
       port: 8080
-      database: iceberg     # = catalog "iceberg" của Trino
-      schema: analytics     # namespace/schema dbt sẽ build model vào
+      database: iceberg       # = catalog "iceberg" của Trino
+      schema: analytics       # namespace dbt build silver/gold vào
       threads: 4
       http_scheme: http

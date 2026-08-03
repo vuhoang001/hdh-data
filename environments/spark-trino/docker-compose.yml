@@ -1,13 +1,15 @@
-name: hdh-data
+name: hdh-spark-trino
 
 # ---------------------------------------------------------------------------
-# Pipeline ETL học tập:  MinIO -> Iceberg (REST catalog) -> Spark -> Trino -> dbt
+# Môi trường 2 — LAKEHOUSE:  MinIO -> Iceberg (REST catalog) -> Spark -> Trino -> dbt
 #   - minio          : object storage (S3) lưu file dữ liệu Iceberg
 #   - mc             : job khởi tạo bucket "warehouse" rồi thoát
 #   - iceberg-rest   : REST catalog quản lý metadata bảng Iceberg
 #   - trino          : engine truy vấn SQL (đọc/ghi Iceberg)
-#   - spark          : chạy pipeline ETL (PySpark)
-#   - dbt            : transform + test dữ liệu (chạy qua Trino)
+#   - spark          : chạy pipeline ETL ingest CSV -> bronze (PySpark)
+#   - dbt            : transform + test silver/gold (chạy qua Trino, --target trino)
+#
+# Đường dẫn tương đối tính từ GỐC REPO vì Makefile chạy với --project-directory .
 # ---------------------------------------------------------------------------
 
 services:
@@ -138,7 +140,7 @@ services:
     command: ["tail", "-f", "/dev/null"]
     networks: [hdh]
 
-  # ----------------------- dbt (transform + test) --------------------------
+  # ----------------------- dbt (transform + test qua Trino) ----------------
   dbt:
     build:
       context: ./dbt

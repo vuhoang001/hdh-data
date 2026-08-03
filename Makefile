@@ -1,91 +1,129 @@
-# Các lệnh tắt cho pipeline hdh-data
-# Dùng:  make up  ->  make ingest  ->  make dbt  ->  make query
+# Lệnh tắt cho hdh-data — HAI môi trường độc lập, chọn theo tiền tố target:
+#
+#   duckdb-*  : môi trường NHẸ    (CSV -> DuckDB, chỉ cần Docker, chạy vài giây)
+#   st-*      : môi trường LAKEHOUSE (MinIO+Iceberg+Spark+Trino, giống production)
+#
+# Luồng nhanh:
+#   DuckDB : make duckdb-up && make duckdb-deps && make duckdb-run && make duckdb-query
+#   Trino  : make st-up && make st-ingest && make st-dbt-deps && make st-dbt && make st-query
 
-.PHONY: up down logs ps build clean spark-sql trino dbt dbt-test dbt-deps query \
-        ingest ingest-orders ingest-order-items ingest-customers ingest-geography \
-        ingest-products ingest-payments ingest-shipments ingest-returns ingest-reviews \
-        ingest-promotions ingest-inventory ingest-sales-daily ingest-web-traffic
+.DEFAULT_GOAL := help
 
-up:            ## Khởi động toàn bộ stack (build image lần đầu)
-	docker compose up -d --build
+# --project-directory . để mọi đường dẫn trong compose tính từ gốc repo và .env được nạp.
+COMPOSE_DUCKDB = docker compose --project-directory . -f environments/duckdb/docker-compose.yml
+COMPOSE_ST     = docker compose --project-directory . -f environments/spark-trino/docker-compose.yml
 
-down:          ## Dừng stack (giữ dữ liệu)
-	docker compose down
+.PHONY: help \
+        duckdb-up duckdb-deps duckdb-run duckdb-test duckdb-query duckdb-shell duckdb-down duckdb-clean duckdb-ps \
+        st-up st-down st-clean st-ps st-logs st-dbt-deps st-dbt st-dbt-test st-trino st-spark-sql st-query \
+        st-ingest st-ingest-orders st-ingest-order-items st-ingest-customers st-ingest-geography \
+        st-ingest-products st-ingest-payments st-ingest-shipments st-ingest-returns st-ingest-reviews \
+        st-ingest-promotions st-ingest-inventory st-ingest-sales-daily st-ingest-web-traffic
 
-clean:         ## Dừng stack + xoá volume (mất sạch dữ liệu MinIO)
-	docker compose down -v
+help:          ## Danh sách lệnh
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-ps:            ## Xem trạng thái container
-	docker compose ps
+# =========================================================================
+# Môi trường 1: DuckDB (nhẹ) — bronze+silver+gold chạy trọn trong dbt-duckdb
+# =========================================================================
+duckdb-up:     ## [duckdb] Bật container dbt-duckdb (build lần đầu)
+	$(COMPOSE_DUCKDB) up -d --build
 
-logs:          ## Xem log
-	docker compose logs -f
+duckdb-deps:   ## [duckdb] Cài dbt_utils (chạy 1 lần)
+	$(COMPOSE_DUCKDB) exec dbt dbt deps
+
+duckdb-run:    ## [duckdb] Build cả pipeline: bronze -> silver -> gold + test
+	$(COMPOSE_DUCKDB) exec dbt dbt build --target duckdb
+
+duckdb-test:   ## [duckdb] Chỉ chạy test dữ liệu
+	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb
+
+duckdb-query:  ## [duckdb] Xem thử 1 bảng gold
+	$(COMPOSE_DUCKDB) exec dbt dbt show --target duckdb --limit 20 \
+	  --inline "select * from analytics.gold_orders_daily order by order_date"
+
+duckdb-shell:  ## [duckdb] Mở DuckDB CLI trên file warehouse
+	$(COMPOSE_DUCKDB) exec dbt python -c "import duckdb; duckdb.connect('/warehouse/hdh.duckdb').sql('show all tables').show()"
+
+duckdb-ps:     ## [duckdb] Trạng thái container
+	$(COMPOSE_DUCKDB) ps
+
+duckdb-down:   ## [duckdb] Dừng (giữ file .duckdb)
+	$(COMPOSE_DUCKDB) down
+
+duckdb-clean:  ## [duckdb] Dừng + xoá volume (mất file .duckdb)
+	$(COMPOSE_DUCKDB) down -v
+
+# =========================================================================
+# Môi trường 2: Spark + Trino (lakehouse trên Iceberg/MinIO)
+# =========================================================================
+st-up:         ## [spark-trino] Bật toàn bộ stack (build image lần đầu)
+	$(COMPOSE_ST) up -d --build
+
+st-ps:         ## [spark-trino] Trạng thái container
+	$(COMPOSE_ST) ps
+
+st-logs:       ## [spark-trino] Xem log
+	$(COMPOSE_ST) logs -f
+
+st-down:       ## [spark-trino] Dừng stack (giữ dữ liệu)
+	$(COMPOSE_ST) down
+
+st-clean:      ## [spark-trino] Dừng + xoá volume MinIO (mất sạch dữ liệu)
+	$(COMPOSE_ST) down -v
 
 # ----- Bước 1: Ingest bằng Spark (CSV -> Iceberg bronze) -----
-# Mỗi bảng một target riêng để ingest lại 1 bảng mà không phải chạy lại tất cả.
-# SPARK_SUBMIT gom phần lặp; đổi cấu hình spark-submit thì sửa 1 chỗ.
-SPARK_SUBMIT = docker compose exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/bronze
+SPARK_SUBMIT = $(COMPOSE_ST) exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/bronze
 
-ingest: ingest-orders ingest-order-items ingest-customers ingest-geography ingest-products \
-        ingest-payments ingest-shipments ingest-returns ingest-reviews ingest-promotions \
-        ingest-inventory ingest-sales-daily ingest-web-traffic   ## Ingest toàn bộ 13 bảng bronze
+st-ingest: st-ingest-orders st-ingest-order-items st-ingest-customers st-ingest-geography st-ingest-products \
+           st-ingest-payments st-ingest-shipments st-ingest-returns st-ingest-reviews st-ingest-promotions \
+           st-ingest-inventory st-ingest-sales-daily st-ingest-web-traffic   ## [spark-trino] Ingest toàn bộ 13 bảng bronze
 
-ingest-orders:        ## Chỉ ingest bảng orders
+st-ingest-orders:        ## [spark-trino] Ingest orders
 	$(SPARK_SUBMIT)/ingest_orders.py
-
-ingest-order-items:   ## Chỉ ingest bảng order_items
+st-ingest-order-items:   ## [spark-trino] Ingest order_items
 	$(SPARK_SUBMIT)/ingest_order_items.py
-
-ingest-customers:     ## Chỉ ingest bảng customers
+st-ingest-customers:     ## [spark-trino] Ingest customers
 	$(SPARK_SUBMIT)/ingest_customers.py
-
-ingest-geography:     ## Chỉ ingest bảng geography
+st-ingest-geography:     ## [spark-trino] Ingest geography
 	$(SPARK_SUBMIT)/ingest_geography.py
-
-ingest-products:      ## Chỉ ingest bảng products
+st-ingest-products:      ## [spark-trino] Ingest products
 	$(SPARK_SUBMIT)/ingest_products.py
-
-ingest-payments:      ## Chỉ ingest bảng payments
+st-ingest-payments:      ## [spark-trino] Ingest payments
 	$(SPARK_SUBMIT)/ingest_payments.py
-
-ingest-shipments:     ## Chỉ ingest bảng shipments
+st-ingest-shipments:     ## [spark-trino] Ingest shipments
 	$(SPARK_SUBMIT)/ingest_shipments.py
-
-ingest-returns:       ## Chỉ ingest bảng returns
+st-ingest-returns:       ## [spark-trino] Ingest returns
 	$(SPARK_SUBMIT)/ingest_returns.py
-
-ingest-reviews:       ## Chỉ ingest bảng reviews
+st-ingest-reviews:       ## [spark-trino] Ingest reviews
 	$(SPARK_SUBMIT)/ingest_reviews.py
-
-ingest-promotions:    ## Chỉ ingest bảng promotions
+st-ingest-promotions:    ## [spark-trino] Ingest promotions
 	$(SPARK_SUBMIT)/ingest_promotions.py
-
-ingest-inventory:     ## Chỉ ingest bảng inventory
+st-ingest-inventory:     ## [spark-trino] Ingest inventory
 	$(SPARK_SUBMIT)/ingest_inventory.py
-
-ingest-sales-daily:   ## Chỉ ingest bảng sales_daily (doanh thu ngày tổng hợp sẵn)
+st-ingest-sales-daily:   ## [spark-trino] Ingest sales_daily
 	$(SPARK_SUBMIT)/ingest_sales_daily.py
-
-ingest-web-traffic:   ## Chỉ ingest bảng web_traffic
+st-ingest-web-traffic:   ## [spark-trino] Ingest web_traffic
 	$(SPARK_SUBMIT)/ingest_web_traffic.py
 
-spark-sql:     ## Mở spark-sql tương tác
-	docker compose exec spark /opt/spark/bin/spark-sql
+st-spark-sql:  ## [spark-trino] Mở spark-sql tương tác
+	$(COMPOSE_ST) exec spark /opt/spark/bin/spark-sql
 
 # ----- Bước 2: Transform + Test bằng dbt (qua Trino) -----
-dbt-deps:
-	docker compose exec dbt dbt deps
+st-dbt-deps:   ## [spark-trino] Cài dbt_utils (chạy 1 lần)
+	$(COMPOSE_ST) exec dbt dbt deps
 
-dbt:           ## Build model dbt (silver + gold)
-	docker compose exec dbt dbt build
+st-dbt:        ## [spark-trino] Build model dbt silver + gold (--target trino)
+	$(COMPOSE_ST) exec dbt dbt build --target trino
 
-dbt-test:      ## Chỉ chạy test dữ liệu
-	docker compose exec dbt dbt test
+st-dbt-test:   ## [spark-trino] Chỉ chạy test dữ liệu
+	$(COMPOSE_ST) exec dbt dbt test --target trino
 
 # ----- Bước 3: Truy vấn bằng Trino -----
-trino:         ## Mở Trino CLI
-	docker compose exec trino trino
+st-trino:      ## [spark-trino] Mở Trino CLI
+	$(COMPOSE_ST) exec trino trino
 
-query:         ## Chạy nhanh 1 câu query mẫu
-	docker compose exec trino trino --catalog iceberg --execute \
+st-query:      ## [spark-trino] Chạy nhanh 1 query mẫu
+	$(COMPOSE_ST) exec trino trino --catalog iceberg --execute \
 	"SELECT * FROM analytics.gold_orders_daily ORDER BY order_date LIMIT 20;"

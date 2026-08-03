@@ -9,11 +9,20 @@ seed-paths: ["seeds"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
+# Thư mục chứa CSV nguồn, nhìn từ bên trong container. Chỉ dùng ở target duckdb (bronze đọc
+# CSV trực tiếp). Ở target trino, bronze do Spark ghi Iceberg nên var này không được dùng.
+vars:
+  data_dir: "/data"
+
 models:
   hdh_dbt:
-    # Tất cả model build vào schema "analytics" (khai báo ở profiles.yml)
-    # Spark ghi bronze; dbt lo silver -> gold
-    # silver -> view, gold -> table (Iceberg)
+    # bronze: CHỈ build ở target duckdb (đọc CSV, làm việc của Spark). Ở target trino, bronze
+    #   do Spark ghi Iceberg và dbt đọc qua source -> tắt để dbt không cố build lại.
+    # silver -> view (chỉ lọc/đổi tên, rẻ), gold -> table (group by/join đắt, tính 1 lần).
+    bronze:
+      +enabled: "{{ target.type == 'duckdb' }}"
+      +materialized: table
+      +schema: bronze
     silver:
       +materialized: view
     gold:

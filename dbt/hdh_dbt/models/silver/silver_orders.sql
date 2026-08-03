@@ -1,6 +1,6 @@
 -- Silver: chỉ giữ đơn đạt kiểm tra chất lượng ở bronze, bỏ cột metadata kỹ thuật
 with source as (
-    select * from {{ source('bronze', 'orders') }}
+    select * from {{ bronze('orders') }}
 )
 
 select

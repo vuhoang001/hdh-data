@@ -27,11 +27,11 @@ select
     year(date_key)                          as year,
     quarter(date_key)                       as quarter,
     month(date_key)                         as month,
-    date_format(date_key, '%M')             as month_name,
+    {{ month_name('date_key') }}            as month_name,
     day(date_key)                           as day_of_month,
-    day_of_week(date_key)                   as day_of_week,   -- Trino: 1=thứ 2 ... 7=chủ nhật
-    date_format(date_key, '%W')             as day_name,
-    day_of_week(date_key) >= 6              as is_weekend,
-    week_of_year(date_key)                  as week_of_year,
-    date_format(date_key, '%Y-%m')          as year_month
+    {{ dow('date_key') }}                   as day_of_week,   -- ISO: 1=thứ 2 ... 7=chủ nhật
+    {{ day_name('date_key') }}              as day_name,
+    {{ dow('date_key') }} >= 6              as is_weekend,
+    {{ week_of_year('date_key') }}          as week_of_year,
+    {{ ym('date_key') }}                    as year_month
 from renamed

@@ -31,7 +31,7 @@ select
     -- Thuộc tính thời điểm đăng ký
     c.signup_date,
     year(c.signup_date)     as signup_year,
-    date_format(c.signup_date, '%Y-%m') as signup_year_month,
+    {{ ym('c.signup_date') }} as signup_year_month,
 
     -- Thuộc tính địa lý (phi chuẩn hoá từ geography)
     c.zip,

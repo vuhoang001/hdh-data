@@ -1,201 +1,194 @@
-# hdh-data — Pipeline ETL học tập
+# hdh-data — Pipeline ETL học tập (2 môi trường)
 
-Một pipeline ETL chạy hoàn toàn bằng Docker để học Data Engineering:
+Một pipeline ETL học Data Engineering, chạy được trên **hai môi trường độc lập** với **cùng
+một bộ model dbt**:
+
+| Môi trường | Engine | Khi nào dùng | Cần gì | Thời gian |
+|---|---|---|---|---|
+| **DuckDB** (nhẹ) | dbt-duckdb | Học/ dev nhanh, không cần hạ tầng | Chỉ Docker | ~vài giây |
+| **Spark + Trino** (lakehouse) | Spark + Trino + Iceberg + MinIO | Giống production, dữ liệu thật trên object storage | Docker + mạng (tải jar) | ~vài phút |
+
+Cùng logic bronze → silver → gold, chỉ khác engine thực thi. Chọn môi trường bằng tiền tố
+lệnh `make`: `duckdb-*` hoặc `st-*` (spark-trino).
 
 ```
-        CSV thô
-           │
-           ▼
-   ┌───────────────┐   ghi bảng    ┌──────────────────┐
-   │   Spark (ETL) │──────────────▶│  Iceberg (raw)   │
-   └───────────────┘   Iceberg     └────────┬─────────┘
-                                            │  metadata: Iceberg REST catalog
-                                            │  file:     MinIO (S3)
-                                            ▼
-   ┌───────────────┐   transform   ┌──────────────────┐   query   ┌────────────┐
-   │  dbt (test)   │──────────────▶│ Iceberg analytics│──────────▶│   Trino    │
-   └───────────────┘   qua Trino   └──────────────────┘   SQL     └────────────┘
+                 data/*.csv  (13 file nguồn, dùng chung)
+                      │
+        ┌─────────────┴──────────────┐
+        ▼                            ▼
+  ┌───────────────┐            ┌──────────────────────────────────────┐
+  │  MÔI TRƯỜNG 1 │            │           MÔI TRƯỜNG 2               │
+  │   DuckDB      │            │        Spark + Trino (lakehouse)     │
+  │               │            │                                      │
+  │ dbt-duckdb:   │            │ Spark ─ingest→ Iceberg(bronze)       │
+  │  bronze(CSV)  │            │           trên MinIO (S3)            │
+  │   → silver    │            │      ↑ metadata: Iceberg REST catalog│
+  │   → gold      │            │ dbt ─(qua Trino)→ silver → gold      │
+  └───────┬───────┘            └──────────────────┬───────────────────┘
+          ▼                                       ▼
+   file hdh.duckdb                      Trino SQL trên Iceberg
 ```
 
-## Thành phần
+## Bí quyết dùng chung 1 project dbt cho 2 engine
 
-| Service        | Vai trò                                   | Cổng (localhost)         |
-|----------------|-------------------------------------------|--------------------------|
-| **MinIO**      | Object storage (S3) lưu file dữ liệu      | 9000 API / 9001 console  |
-| **iceberg-rest** | REST catalog quản lý metadata Iceberg   | 8181                     |
-| **Trino**      | Engine truy vấn SQL trên Iceberg          | 8080                     |
-| **Spark**      | Chạy pipeline ETL (PySpark)               | —                        |
-| **dbt**        | Transform + test dữ liệu (qua Trino)      | —                        |
+Điểm mấu chốt để **không nhân đôi** logic silver/gold: một lớp macro mỏng che đi phần khác
+biệt giữa hai engine.
+
+- **`{{ bronze('orders') }}`** ([macros/bronze_ref.sql](dbt/hdh_dbt/macros/bronze_ref.sql)) —
+  silver trỏ về đúng nguồn bronze theo môi trường:
+  - target `duckdb` → `ref('bronze_orders')` (bronze là dbt model đọc CSV)
+  - target `trino`  → `source('bronze', 'orders')` (bronze do Spark ghi Iceberg)
+- **macro ngày tháng** ([macros/portable_dates.sql](dbt/hdh_dbt/macros/portable_dates.sql)) —
+  gom vài hàm lệch nhau giữa Trino và DuckDB (`date_format`↔`strftime`,
+  `day_of_week`↔`isodow`, `week_of_year`↔`week`).
+- **bronze layer** chỉ build khi `target=duckdb` (khai báo `enabled` ở
+  [dbt_project.yml](dbt/hdh_dbt/dbt_project.yml)); ở target `trino` bronze do Spark lo, nên
+  source Iceberg được tắt khi chạy DuckDB.
+
+Nhờ vậy mọi model silver/gold viết **một lần**, chạy đúng ở cả hai nơi.
 
 ## Yêu cầu
-- Docker + Docker Compose (đã có sẵn trên máy).
-- Lần đầu chạy sẽ build image Spark/dbt và tải jar Iceberg → cần mạng.
+- Docker + Docker Compose.
+- Riêng môi trường Spark+Trino: lần đầu chạy sẽ build image Spark/dbt và tải jar Iceberg → cần mạng.
 
-## Chạy pipeline (4 bước)
-
+## Xem toàn bộ lệnh
 ```bash
-cd ~/learn/hdh-data
-
-# 1) Khởi động toàn bộ stack (lần đầu sẽ build image)
-make up
-make ps          # đợi tới khi trino/spark/dbt ở trạng thái "Up"
-
-# 2) Ingest: Spark đọc CSV -> 13 bảng Iceberg trong iceberg.bronze (~2 phút)
-make ingest                # toàn bộ; hoặc từng bảng: make ingest-orders, make ingest-products, ...
-
-# 3) Transform + Test: dbt build silver + gold, chạy các test dữ liệu
-make dbt-deps    # cài dbt_utils (chạy 1 lần)
-make dbt         # = dbt build (chạy model + test)
-
-# 4) Truy vấn kết quả bằng Trino
-make query
+make            # in danh sách lệnh kèm mô tả
 ```
 
-> Không dùng `make`? Xem các lệnh `docker compose ...` tương ứng trong `Makefile`.
+---
+
+## Môi trường 1 — DuckDB (nhẹ, khuyến nghị để bắt đầu)
+
+Toàn bộ pipeline (bronze đọc CSV → silver → gold + test) chạy trong **một container** bằng
+dbt-duckdb. Không MinIO, không Iceberg, không Trino, không Spark.
+
+```bash
+make duckdb-up       # 1) build image + bật container (lần đầu ~30s build)
+make duckdb-deps     # 2) cài dbt_utils (chạy 1 lần)
+make duckdb-run      # 3) dbt build: bronze → silver → gold + 113 test (~7s)
+make duckdb-query    # 4) xem thử bảng gold
+```
+
+Kiểm tra thủ công:
+```bash
+make duckdb-shell    # liệt kê các bảng trong file hdh.duckdb
+```
+
+Dọn dẹp:
+```bash
+make duckdb-down     # dừng (giữ file .duckdb)
+make duckdb-clean    # dừng + xoá volume (mất file .duckdb)
+```
+
+---
+
+## Môi trường 2 — Spark + Trino (lakehouse)
+
+| Service | Vai trò | Cổng (localhost) |
+|---|---|---|
+| **MinIO** | Object storage (S3) lưu file Iceberg | 9000 API / 9001 console |
+| **iceberg-rest** | REST catalog quản lý metadata Iceberg | 8181 |
+| **Trino** | Engine truy vấn SQL trên Iceberg | 8080 |
+| **Spark** | Ingest CSV → bronze (PySpark) | — |
+| **dbt** | Transform + test silver/gold (qua Trino) | — |
+
+```bash
+make st-up           # 1) bật toàn bộ stack (lần đầu build image + tải jar)
+make st-ps           # đợi tới khi trino/spark/dbt ở trạng thái "Up"
+
+make st-ingest       # 2) Spark: CSV → 13 bảng iceberg.bronze (~2 phút)
+                     #    hoặc từng bảng: make st-ingest-orders, st-ingest-products, ...
+
+make st-dbt-deps     # 3) cài dbt_utils (chạy 1 lần)
+make st-dbt          #    dbt build silver + gold + test (--target trino)
+
+make st-query        # 4) truy vấn kết quả bằng Trino
+```
+
+Kiểm tra thủ công:
+- **MinIO console:** http://localhost:9001 — user/pass trong `.env` (bucket `warehouse` chứa file Iceberg).
+- **Trino CLI:** `make st-trino`
+  ```sql
+  SHOW SCHEMAS FROM iceberg;
+  SELECT * FROM iceberg.bronze.orders LIMIT 20;
+  SELECT * FROM iceberg.analytics.fact_order_items LIMIT 20;
+  SELECT * FROM iceberg.analytics.gold_revenue_daily ORDER BY order_date DESC LIMIT 20;
+  ```
+- **Spark SQL:** `make st-spark-sql`
+
+Dọn dẹp:
+```bash
+make st-down         # dừng, giữ dữ liệu
+make st-clean        # dừng + xoá volume MinIO (mất sạch dữ liệu)
+```
+
+> `.env` chứa credential cho stack này (MinIO + Postgres metastore). Copy từ `.env.example`
+> nếu chưa có. Môi trường DuckDB không cần `.env`.
 
 ## Tài liệu
 
-- [Star schema](docs/star-schema.md) — thiết kế dim/fact ở gold layer, năm quyết định thiết kế
-  và lý do, query mẫu. **Đọc trước khi phân tích dữ liệu.**
-- [Star schema — lý thuyết thiết kế](docs/star-schema-ly-thuyet.md) — quy trình 4 bước Kimball,
-  bus matrix, 4 loại fact, 3 loại số đo, 5 loại dimension, SCD, bridge table.
-- [Mô hình dữ liệu](docs/mo-hinh-du-lieu.md) — sơ đồ quan hệ 13 bảng, lực lượng từng liên kết,
-  công thức join đúng và các bẫy làm ra số sai. **Đọc trước khi viết query join.**
-- [Thêm một bảng mới vào pipeline](docs/them-bang-moi.md) — hướng dẫn từng bước từ CSV tới
-  gold, kèm quy ước cho từng layer và các lỗi hay gặp.
-
-## Kiểm tra thủ công
-
-**MinIO console:** http://localhost:9001 — dùng `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` trong `.env`
-(sẽ thấy bucket `warehouse` chứa file Iceberg sau khi ingest).
-
-**Trino CLI:**
-```bash
-make trino
-```
-```sql
-SHOW SCHEMAS FROM iceberg;
-SELECT * FROM iceberg.bronze.orders LIMIT 20;
-SELECT * FROM iceberg.analytics.silver_orders LIMIT 20;
-SELECT * FROM iceberg.analytics.gold_orders_daily ORDER BY order_date LIMIT 20;
-SELECT * FROM iceberg.analytics.gold_revenue_daily ORDER BY order_date DESC LIMIT 20;
-```
-
-**Spark SQL:**
-```bash
-make spark-sql
-```
-```sql
-SELECT order_status, count(*) FROM iceberg.bronze.orders GROUP BY order_status;
-```
+- [Star schema](docs/star-schema.md) — thiết kế dim/fact ở gold layer, lý do thiết kế, query mẫu.
+- [Star schema — lý thuyết](docs/star-schema-ly-thuyet.md) — quy trình 4 bước Kimball, bus matrix, SCD, bridge table.
+- [Mô hình dữ liệu](docs/mo-hinh-du-lieu.md) — sơ đồ quan hệ 13 bảng, công thức join đúng. **Đọc trước khi viết query join.**
+- [Thêm một bảng mới](docs/them-bang-moi.md) — hướng dẫn từng bước từ CSV tới gold cho cả hai môi trường.
 
 ## Cấu trúc thư mục
 
 ```
 hdh-data/
-├── docker-compose.yml          # định nghĩa các service
-├── .env                        # credential & version dùng chung
-├── Makefile                    # lệnh tắt (up/ingest/dbt/query)
-├── data/                       # CSV nguồn
-├── iceberg-rest/
-│   └── Dockerfile              # REST catalog + driver Postgres
-├── trino/etc/catalog/
-│   └── iceberg.properties      # catalog Trino -> REST + MinIO
-├── spark/
-│   ├── Dockerfile              # Spark 3.5 + jar Iceberg/AWS
-│   ├── conf/spark-defaults.conf # cấu hình catalog Iceberg cho Spark
-│   └── jobs/
-│       ├── common/             # CHỈ hạ tầng: session, đọc file, ghi Iceberg
-│       │   ├── session.py
-│       │   ├── io.py
-│       │   └── iceberg.py
-│       └── bronze/             # mỗi bảng 1 job, tự giữ logic của mình (13 job)
-│           ├── ingest_orders.py
-│           ├── ingest_order_items.py
-│           ├── ingest_customers.py
-│           ├── ingest_geography.py
-│           ├── ingest_products.py
-│           ├── ingest_payments.py
-│           ├── ingest_shipments.py
-│           ├── ingest_returns.py
-│           ├── ingest_reviews.py
-│           ├── ingest_promotions.py
-│           ├── ingest_inventory.py
-│           ├── ingest_sales_daily.py
-│           └── ingest_web_traffic.py
-├── docs/
-│   └── them-bang-moi.md        # hướng dẫn thêm bảng mới
-└── dbt/
-    ├── Dockerfile              # dbt-core + dbt-trino
-    ├── profiles.yml            # kết nối dbt -> Trino
-    └── hdh_dbt/                # dbt project (models + tests)
-        ├── models/silver/      # silver_orders, silver_order_items (view) + source + tests
-        └── models/gold/        # gold_orders_daily, gold_revenue_daily (table) + tests
+├── Makefile                       # lệnh tắt: duckdb-* và st-*
+├── .env / .env.example            # credential cho stack spark-trino
+├── data/                          # 13 CSV nguồn (dùng chung 2 môi trường)
+├── environments/
+│   ├── duckdb/docker-compose.yml       # môi trường 1: 1 container dbt-duckdb
+│   └── spark-trino/docker-compose.yml  # môi trường 2: minio+iceberg+spark+trino+dbt
+├── dbt/
+│   ├── Dockerfile                 # 1 image, 2 adapter: dbt-duckdb + dbt-trino
+│   ├── profiles.yml               # 2 target: duckdb (mặc định) + trino
+│   └── hdh_dbt/
+│       ├── dbt_project.yml        # bronze enabled khi target=duckdb; silver=view, gold=table
+│       ├── macros/
+│       │   ├── bronze_ref.sql         # bronze() — chọn nguồn theo môi trường
+│       │   ├── portable_dates.sql     # hàm ngày tháng portable Trino↔DuckDB
+│       │   ├── bronze_helpers.sql     # read_source_csv, invalid_reason, bronze_audit
+│       │   ├── generate_schema_name.sql  # dùng thẳng tên schema (bronze/analytics)
+│       │   └── generate_alias_name.sql   # bỏ tiền tố bronze_ khỏi tên bảng
+│       └── models/
+│           ├── bronze/            # 13 model đọc CSV (CHỈ chạy ở target duckdb)
+│           ├── silver/            # 6 view + _sources.yml (source Iceberg cho target trino)
+│           └── gold/              # dim_*, fact_*, gold_* (star schema)
+├── spark/                         # Spark jobs ingest bronze (môi trường 2)
+│   ├── Dockerfile · conf/ · jobs/common/ · jobs/bronze/ (13 job)
+├── trino/etc/catalog/             # catalog Trino → Iceberg REST + MinIO
+└── iceberg-rest/Dockerfile        # REST catalog + driver Postgres
 ```
-
-`common/` chỉ chứa phần kỹ thuật dùng lại được (tạo SparkSession, đọc CSV, ghi Iceberg lên
-MinIO). Schema và rule làm sạch của từng bảng nằm trong chính file job ở `bronze/`, nên thêm
-bảng mới = thêm 1 file, không phải sửa `common/`.
 
 ## Layer dữ liệu
 
 Mỗi layer chịu trách nhiệm một việc: bronze **mô tả** nguồn, silver **quyết định** dữ liệu nào
 dùng được, gold **trả lời** câu hỏi business.
 
-- **bronze** — Spark ingest CSV, chuẩn hoá text, gắn cờ `_is_valid` + metadata audit. Giữ
-  nguyên số dòng nguồn, không lọc bỏ gì (để luôn truy ngược được về dữ liệu gốc).
-  **13 bảng, mỗi bảng 1 job trong `spark/jobs/bronze/`:**
+- **bronze** — chuẩn hoá text, gắn cờ `_is_valid` + `_invalid_reason` + audit; giữ nguyên số
+  dòng nguồn. Ở DuckDB do dbt model làm; ở Trino do Spark làm. **Cùng rule chất lượng.**
+  13 bảng: `orders` (646.945), `order_items` (714.669), `payments`, `shipments`, `reviews`,
+  `returns`, `inventory`, `customers` (121.930), `geography` (39.948), `products` (2.412),
+  `promotions` (50), `sales_daily`, `web_traffic`.
 
-  | Bảng | Nguồn | Dòng | Loại |
-  |---|---|---:|---|
-  | `orders` | orders.csv | 646,945 | fact |
-  | `order_items` | order_items.csv | 714,669 | fact |
-  | `payments` | payments.csv | 646,945 | fact (1 đơn 1 dòng) |
-  | `shipments` | shipments.csv | 566,067 | fact |
-  | `reviews` | reviews.csv | 113,551 | fact |
-  | `returns` | returns.csv | 39,939 | fact |
-  | `inventory` | inventory.csv | 60,247 | snapshot tồn kho theo tháng |
-  | `customers` | customers.csv | 121,930 | dimension |
-  | `geography` | geography.csv | 39,948 | dimension (zip → city/region) |
-  | `products` | products.csv | 2,412 | dimension |
-  | `promotions` | promotions.csv | 50 | dimension |
-  | `sales_daily` | sales.csv | 3,833 | **doanh thu ngày tổng hợp sẵn** — xem ghi chú dưới |
-  | `web_traffic` | web_traffic.csv | 3,652 | lưu lượng web theo ngày |
+  > **`sales_daily` không khớp doanh thu tính từ `order_items`** — đây là hai nguồn số độc lập;
+  > chênh lệch là thứ cần điều tra, đừng "sửa" cho khớp.
+- **silver** — lọc theo `_is_valid`, bỏ cột kỹ thuật, thêm cột dẫn xuất. Là **view** (rẻ, luôn
+  phản ánh bronze mới nhất): `silver_orders`, `silver_order_items`, `silver_customers`,
+  `silver_products`, `silver_geography`, `silver_promotions`.
+- **gold** — star schema, vật liệu hoá thành **table**: `dim_customer`, `dim_product`,
+  `dim_promotion`, `dim_date`, `fact_order_items`, và 2 bảng tổng hợp `gold_orders_daily`,
+  `gold_revenue_daily`.
 
-  > **`sales_daily` không khớp với doanh thu tính từ `order_items`** (2022-12-31: 2,383,037 vs
-  > 2,015,982). Đây là hai nguồn số độc lập; chênh lệch là thứ cần điều tra, đừng "sửa" cho khớp.
-  >
-  > `sample_submission.csv` **không** được ingest: đó là template nộp kết quả dự báo cho 548
-  > ngày tương lai (2023-01-01 → 2024-07-01), không phải dữ liệu nguồn.
-- **silver** — dbt lọc theo `_is_valid`, bỏ cột kỹ thuật, thêm cột dẫn xuất. Là **view** vì
-  chỉ lọc/đổi tên nên rẻ, và luôn phản ánh bronze mới nhất.
-  - `iceberg.analytics.silver_orders`
-  - `iceberg.analytics.silver_order_items` — thêm `line_amount`
-- **gold** — dbt tổng hợp. Là **table** vì `group by`/`join` trên hàng trăm nghìn dòng thì
-  đắt, tính một lần rồi dùng lại.
-  - `iceberg.analytics.gold_orders_daily` — số đơn theo ngày
-  - `iceberg.analytics.gold_revenue_daily` — doanh thu theo ngày (join items với orders)
+## Test dữ liệu
 
-> Cả silver lẫn gold đều nằm trong schema `analytics` (khai báo ở `dbt/profiles.yml`);
-> `silver_`/`gold_` là tiền tố quy ước, không phải schema riêng.
+`make duckdb-run` / `make st-dbt` = `dbt build` — tạo model **và** test ngay sau mỗi model.
+Silver fail test thì gold không build từ dữ liệu hỏng. Gồm `not_null`/`unique` cho khoá,
+`accepted_values`, `relationships` (bắt dòng mồ côi), `accepted_range` (chặn số âm), và
+[test hạt fact](dbt/hdh_dbt/tests/assert_fact_order_items_grain.sql) (số dòng fact = silver).
 
-## Test dữ liệu (dbt)
-
-`make dbt` = `dbt build` — tạo model **và** test ngay sau mỗi model, theo đúng thứ tự phụ
-thuộc. Silver fail test thì gold không được build từ dữ liệu hỏng đó.
-
-- `not_null`, `unique` cho khoá chính (`orders.order_id`, `gold_*.order_date`)
-- `accepted_values` cho `order_status` (created/paid/shipped/delivered/returned/cancelled)
-- `relationships` cho `silver_order_items.order_id` → `silver_orders` — bắt dòng hàng mồ côi,
-  thứ mà bronze không thể thấy vì nó xử lý từng bảng độc lập
-- `accepted_range` chặn số âm cho `line_amount`, `revenue`, và chặn `num_orders <= 0`
-
-`order_items` **không** test `unique` trên `order_id`: đó là bảng fact, một đơn có nhiều dòng hàng.
-
-Chỉ chạy test: `make dbt-test`
-
-## Dọn dẹp
-```bash
-make down        # dừng, giữ dữ liệu
-make clean       # dừng + xoá volume MinIO (mất sạch dữ liệu)
-```
+Chỉ chạy test: `make duckdb-test` hoặc `make st-dbt-test`.
