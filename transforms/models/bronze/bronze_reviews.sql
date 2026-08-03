@@ -1,14 +1,18 @@
--- Bronze: data/reviews.csv -> bronze.reviews  (tương đương ingest_reviews.py)
+-- Bronze: data/reviews.csv -> bronze.reviews
+-- Nguồn duy nhất của logic bronze cho bảng reviews (xem macros/bronze_helpers.sql).
+{% set source_file = 'reviews.csv' %}
+{% set columns = {
+    'review_id': 'string!',
+    'order_id': 'integer',
+    'product_id': 'integer',
+    'customer_id': 'integer',
+    'review_date': 'date',
+    'rating': 'integer',
+    'review_title': 'string'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('reviews.csv', {
-        'review_id': 'VARCHAR',
-        'order_id': 'INTEGER',
-        'product_id': 'INTEGER',
-        'customer_id': 'INTEGER',
-        'review_date': 'DATE',
-        'rating': 'INTEGER',
-        'review_title': 'VARCHAR'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -27,18 +31,19 @@ normalized as (
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["order_id is null", "order_id_missing"],
-            ["product_id is null", "product_id_missing"],
-            ["customer_id is null", "customer_id_missing"],
-            ["review_date is null", "review_date_missing"],
-            ["rating is null or rating not between 1 and 5", "rating_out_of_range"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when order_id is null then 'order_id_missing' end,
+            case when product_id is null then 'product_id_missing' end,
+            case when customer_id is null then 'customer_id_missing' end,
+            case when review_date is null then 'review_date_missing' end,
+            case when rating is null or rating not between 1 and 5 then 'rating_out_of_range' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('reviews.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

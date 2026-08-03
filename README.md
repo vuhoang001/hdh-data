@@ -57,10 +57,10 @@ hdh-data/
 │
 ├── infra/local/               # docker compose 2 stack + init MinIO + Iceberg REST
 │
-├── ingestion/                 # CSV → bronze Iceberg (chỉ môi trường lakehouse)
+├── ingestion/                 # nguồn → bronze Iceberg (chỉ môi trường lakehouse)
+│   ├── ingest.py              #   ★ điểm vào DUY NHẤT, chạy chung cho mọi bảng
 │   ├── config/sources.yml     #   ★ đăng ký 13 bảng — Makefile sinh target từ đây
-│   ├── common/                #   hạ tầng dùng chung: config, khung job, IO, Iceberg
-│   └── connectors/            #   13 file, mỗi file = business logic của 1 bảng
+│   └── common/                #   hạ tầng: config, đọc model SQL, khung job, IO, Iceberg
 │
 ├── transforms/                # dbt project: bronze → silver → gold
 │   ├── profiles.yml           #   2 target: duckdb + trino, giá trị từ .env
@@ -199,7 +199,8 @@ Mỗi layer chịu trách nhiệm một việc: bronze **mô tả** nguồn, sil
 dùng được, gold **trả lời** câu hỏi business.
 
 - **bronze** — chuẩn hoá text, gắn cờ `_is_valid` + `_invalid_reason` + audit; giữ nguyên số
-  dòng nguồn. Ở DuckDB do dbt model làm; ở Trino do Spark làm. **Cùng rule chất lượng.**
+  dòng nguồn. **Một bản logic duy nhất** trong `transforms/models/bronze/*.sql` — dbt chạy
+  nó ở DuckDB, Spark chạy chính nó ở lakehouse.
   13 bảng: `orders` (646.945), `order_items` (714.669), `payments`, `shipments`, `reviews`,
   `returns`, `inventory`, `customers` (121.930), `geography` (39.948), `products` (2.412),
   `promotions` (50), `sales_daily`, `web_traffic`.
@@ -227,19 +228,19 @@ make ci-local       # đúng chuỗi mà CI chạy
 
 | File | Bắt lỗi gì |
 | --- | --- |
-| `test_sources_registry.py` | Khai bảng trong `sources.yml` mà quên tạo connector (và ngược lại) · trỏ tới CSV không tồn tại · khai `type:` chưa có reader trong `io.py` |
-| `test_bronze_parity.py` | **Hai bản cài đặt bronze lệch nhau** — sửa rule ở Spark mà quên bản dbt |
+| `test_bronze_models.py` | Khai bảng trong `sources.yml` mà quên tạo model SQL (và ngược lại) · model thiếu cột audit hoặc luật chất lượng · `file:` lệch với `source_file` · `partition_by` sai cú pháp · khai `type:` chưa có reader trong `io.py` |
 
-Cái thứ hai quan trọng vì bronze được viết **hai lần** (13 file PySpark cho lakehouse + 13
-file SQL cho DuckDB). Đó là đánh đổi có ý thức để dev loop và CI chạy trong vài giây thay vì
-phải dựng MinIO+Spark+Trino — nhưng nếu hai bản lệch, hai môi trường cho hai kết quả khác
-nhau mà không lỗi nào báo. Test so tập nhãn `_invalid_reason` của từng cặp file.
+Bronze từng được viết **hai lần** (13 file PySpark + 13 file SQL) và có một test canh cho hai
+bản khỏi lệch. Nhưng test đó chỉ so được *tập nhãn* `_invalid_reason`, không so được điều
+kiện bên trong — đổi `< 0` thành `<= 0` ở một bên thì nó vẫn xanh. Giờ chỉ còn **một** bản
+(Spark chạy chính file SQL mà dbt build), nên lệch không còn khả năng xảy ra và test đổi
+nhiệm vụ: từ *dò lệch* sang *kiểm khai báo đúng khuôn*.
 
 ## Local đọc CSV, production đọc Postgres — đổi ở đâu?
 
-Đúng một chỗ: `ingestion/common/io.py`. `BronzeJob` tách sẵn *nguồn* khỏi *rule làm sạch* và
-*đích*, nên đổi nguồn không đụng tới `transform()`, silver, gold hay test dbt. Chi tiết kèm
-diff cụ thể: [ingestion/README.md](ingestion/README.md).
+Đúng một chỗ: `SOURCE_READERS` trong `ingestion/common/io.py`, cộng với `type:` trong
+`sources.yml`. Model SQL, silver, gold và test dbt không đụng tới. Chi tiết kèm diff cụ thể:
+[ingestion/README.md](ingestion/README.md).
 
 > **Hai thư mục tên "tests", hai nghĩa khác nhau — đừng nhầm:**
 > `tests/` ở gốc repo là test **cấu trúc repo**, chạy bằng pytest, không cần Docker.
@@ -257,8 +258,7 @@ Chỉ chạy test dữ liệu: `make duckdb-test` hoặc `make lake-dbt-test`.
 ## Thêm một bảng mới
 
 1. Khai báo trong [`ingestion/config/sources.yml`](ingestion/config/sources.yml)
-2. Tạo `ingestion/connectors/ingest_<bảng>.py` (Spark) và
-   `transforms/models/bronze/bronze_<bảng>.sql` (DuckDB)
+2. Tạo `transforms/models/bronze/bronze_<bảng>.sql` — **một file, hai engine cùng chạy**
 3. `pytest tests` — bắt ngay nếu hai bước trên lệch nhau
 4. `make lake-ingest-<bảng>` rồi `make lake-dbt`
 

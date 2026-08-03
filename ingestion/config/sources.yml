@@ -1,20 +1,34 @@
 # =============================================================================
-# ĐĂNG KÝ NGUỒN — nơi duy nhất liệt kê các bảng bronze của pipeline.
+# ĐĂNG KÝ NGUỒN — HẠ TẦNG INGEST của từng bảng bronze.
 #
-# Thêm một bảng mới = thêm một mục ở đây + tạo file connectors/ingest_<table>.py.
-# Makefile đọc trực tiếp file này để sinh target `make ingest-<table>`, nên không
-# còn danh sách bảng nào bị lặp ở chỗ khác.
+# File này CỐ Ý không chứa logic biến đổi. Ranh giới:
+#
+#   transforms/models/bronze/bronze_<bảng>.sql   LOGIC — schema, chuẩn hoá, luật chất
+#                                                lượng, cột dẫn xuất, cột audit.
+#                                                dbt VÀ Spark cùng chạy chính file đó.
+#   ingestion/config/sources.yml (file này)      HẠ TẦNG — nguồn lấy ở đâu, ghi Iceberg
+#                                                partition kiểu gì. dbt không cần.
+#
+# Thêm một bảng mới = thêm một mục ở đây + tạo transforms/models/bronze/bronze_<bảng>.sql.
+# KHÔNG phải viết Python: ingest.py chạy chung cho mọi bảng.
+#
+# Makefile đọc trực tiếp file này để sinh target `make lake-ingest-<table>`, nên danh
+# sách bảng không bị lặp ở chỗ khác.
 #
 # Các trường:
-#   table        : tên bảng trong namespace bronze (BRONZE_NAMESPACE ở .env)
-#   file         : tên file trong data/ (hoặc định danh nguồn, tuỳ `type`)
-#   type         : loại nguồn — phải là một reader đã đăng ký ở ingestion/common/io.py.
-#                  Hiện chỉ có `csv`. ĐÂY LÀ CHỖ ĐỔI KHI LÊN PRODUCTION: đổi thành
-#                  `postgres` là bảng đó lấy từ DB thay vì file, và transform/silver/gold
-#                  không phải sửa gì. Test bắt lỗi nếu khai loại chưa có reader.
-#   partition_by : chiến lược partition Iceberg, khai báo trong file connector.
-#                  Ghi ở đây để nhìn thấy toàn cảnh mà không phải mở 13 file.
-#   rows         : số dòng xấp xỉ, dùng để hiểu vì sao chọn chiến lược partition đó
+#   table         : tên bảng trong namespace bronze (BRONZE_NAMESPACE ở .env)
+#   file          : tên file trong data/ — chỉ để tra cứu. Giá trị THẬT dùng lúc chạy là
+#                   `source_file` khai trong model SQL (dbt cần nó mà không đọc được YAML);
+#                   test kiểm hai bên khớp nhau.
+#   type          : loại nguồn — phải là một reader đã đăng ký ở ingestion/common/io.py.
+#                   Hiện chỉ có `csv`. ĐÂY LÀ CHỖ ĐỔI KHI LÊN PRODUCTION: đổi thành
+#                   `postgres` là bảng đó lấy từ DB thay vì file, và model SQL, silver,
+#                   gold, test đều không phải sửa. Test bắt lỗi nếu khai loại chưa có reader.
+#   partition_by  : chiến lược partition Iceberg. Đây là NGUỒN THẬT, không còn là chú
+#                   thích — chuỗi ở đây được phân tích thành hàm biến đổi Iceberg.
+#                   Hỗ trợ: years/months/days/hours(cột), bucket/truncate(số, cột).
+#   extra_metrics : {nhãn: điều kiện SQL} để log thêm số liệu riêng của bảng sau khi ghi
+#   rows          : số dòng xấp xỉ, dùng để hiểu vì sao chọn chiến lược partition đó
 # =============================================================================
 version: 1
 
@@ -101,6 +115,11 @@ sources:
     type: csv
     partition_by: null
     rows: 3833
+    # _margin_negative do model SQL sinh ra: 382/3833 ngày (10%) bán lỗ. Tỷ lệ đó là sự
+    # thật kinh doanh chứ không phải lỗi dữ liệu, nên nó là SỐ LIỆU cần thấy sau mỗi lần
+    # ingest, không phải cờ chất lượng.
+    extra_metrics:
+      "ngày bán lỗ": "_margin_negative"
     description: >
       Doanh thu/giá vốn TỔNG HỢP SẴN theo ngày. KHÔNG khớp với doanh thu tính từ
       order_items — hai nguồn số độc lập, chênh lệch là thứ cần điều tra.

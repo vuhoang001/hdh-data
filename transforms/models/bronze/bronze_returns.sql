@@ -1,14 +1,18 @@
--- Bronze: data/returns.csv -> bronze.returns  (tương đương ingest_returns.py)
+-- Bronze: data/returns.csv -> bronze.returns
+-- Nguồn duy nhất của logic bronze cho bảng returns (xem macros/bronze_helpers.sql).
+{% set source_file = 'returns.csv' %}
+{% set columns = {
+    'return_id': 'string!',
+    'order_id': 'integer',
+    'product_id': 'integer',
+    'return_date': 'date',
+    'return_reason': 'string',
+    'return_quantity': 'integer',
+    'refund_amount': 'double'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('returns.csv', {
-        'return_id': 'VARCHAR',
-        'order_id': 'INTEGER',
-        'product_id': 'INTEGER',
-        'return_date': 'DATE',
-        'return_reason': 'VARCHAR',
-        'return_quantity': 'INTEGER',
-        'refund_amount': 'DOUBLE'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -26,19 +30,20 @@ normalized as (
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["order_id is null", "order_id_missing"],
-            ["product_id is null", "product_id_missing"],
-            ["return_date is null", "return_date_missing"],
-            ["return_quantity is null or return_quantity <= 0", "return_quantity_invalid"],
-            ["refund_amount is null or refund_amount < 0", "refund_amount_invalid"],
-            ["return_reason not in ('changed_mind','defective','late_delivery','not_as_described','wrong_size')", "reason_unknown"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when order_id is null then 'order_id_missing' end,
+            case when product_id is null then 'product_id_missing' end,
+            case when return_date is null then 'return_date_missing' end,
+            case when return_quantity is null or return_quantity <= 0 then 'return_quantity_invalid' end,
+            case when refund_amount is null or refund_amount < 0 then 'refund_amount_invalid' end,
+            case when return_reason not in ('changed_mind','defective','late_delivery','not_as_described','wrong_size') then 'reason_unknown' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('returns.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

@@ -22,6 +22,14 @@ BRONZE_NAMESPACE = f"{CATALOG}.{BRONZE_SCHEMA}"
 # Thư mục CSV nguồn nhìn từ bên trong container spark
 DATA_DIR = os.environ.get("SPARK_DATA_DIR", "/opt/spark/data")
 
+# Thư mục chứa model bronze DÙNG CHUNG với dbt (transforms/models/bronze).
+# Spark đọc chính các file .sql mà dbt build — xem common/sql_model.py.
+# compose mount ./transforms vào đây; giá trị mặc định chỉ dùng khi chạy ngoài container.
+MODELS_DIR = os.environ.get("SPARK_BRONZE_MODELS_DIR", "/opt/spark/transforms/models/bronze")
+
+# Đăng ký nguồn — cấu hình ingest mà dbt không cần (xem common/spec.py)
+SOURCES_FILE = os.environ.get("SPARK_SOURCES_FILE", "/opt/spark/jobs/config/sources.yml")
+
 
 def bronze_table(name: str) -> str:
     """Tên bảng bronze đầy đủ: bronze_table("orders") -> "iceberg.bronze.orders"."""

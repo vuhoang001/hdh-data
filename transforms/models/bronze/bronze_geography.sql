@@ -1,11 +1,15 @@
--- Bronze: data/geography.csv -> bronze.geography  (tương đương ingest_geography.py)
+-- Bronze: data/geography.csv -> bronze.geography
+-- Nguồn duy nhất của logic bronze cho bảng geography (xem macros/bronze_helpers.sql).
+{% set source_file = 'geography.csv' %}
+{% set columns = {
+    'zip': 'string!',
+    'city': 'string',
+    'region': 'string',
+    'district': 'string'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('geography.csv', {
-        'zip': 'VARCHAR',
-        'city': 'VARCHAR',
-        'region': 'VARCHAR',
-        'district': 'VARCHAR'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -21,16 +25,17 @@ normalized as (
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["zip is null", "zip_missing"],
-            ["city is null", "city_missing"],
-            ["region not in ('central','east','west')", "region_unknown"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when zip is null then 'zip_missing' end,
+            case when city is null then 'city_missing' end,
+            case when region not in ('central','east','west') then 'region_unknown' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('geography.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

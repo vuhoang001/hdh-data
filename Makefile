@@ -41,7 +41,7 @@ INGEST_TARGETS = $(addprefix lake-ingest-,$(BRONZE_TABLES))
         duckdb-test-unit duckdb-test-data duckdb-test-store duckdb-test-failures \
         duckdb-down duckdb-clean duckdb-ps \
         lake-up lake-down lake-clean lake-ps lake-logs lake-dbt-deps lake-dbt lake-dbt-test \
-        lake-freshness \
+        lake-freshness lake-ingest-list \
         lake-trino lake-spark-sql lake-query lake-ingest \
         ci-local
 
@@ -127,15 +127,19 @@ lake-down:     ## [lakehouse] Dừng stack (giữ dữ liệu)
 lake-clean:    ## [lakehouse] Dừng + xoá volume MinIO (mất sạch dữ liệu)
 	$(COMPOSE_LAKE) down -v
 
-# ----- Bước 1: Ingest bằng Spark (CSV -> Iceberg bronze) -----
-SPARK_SUBMIT = $(COMPOSE_LAKE) exec spark /opt/spark/bin/spark-submit $(SPARK_JOBS_DIR)/connectors
+# ----- Bước 1: Ingest bằng Spark (nguồn -> Iceberg bronze) -----
+SPARK_SUBMIT = $(COMPOSE_LAKE) exec spark /opt/spark/bin/spark-submit $(SPARK_JOBS_DIR)/ingest.py
 
 lake-ingest: $(INGEST_TARGETS)   ## [lakehouse] Ingest toàn bộ bảng bronze
 
-# Một pattern rule thay cho 13 target lặp lại:
-#   make lake-ingest-orders -> spark-submit .../connectors/ingest_orders.py
+# MỘT script chung cho mọi bảng — không còn 13 file ingest_*.py. ingest.py đọc chính
+# transforms/models/bronze/bronze_<bảng>.sql (cùng file dbt build) rồi chạy bằng spark.sql().
+#   make lake-ingest-orders -> spark-submit ingest.py --table orders
 lake-ingest-%:
-	$(SPARK_SUBMIT)/ingest_$*.py
+	$(SPARK_SUBMIT) --table $*
+
+lake-ingest-list: ## [lakehouse] Liệt kê các bảng bronze đã khai trong sources.yml
+	$(SPARK_SUBMIT) --list
 
 lake-spark-sql: ## [lakehouse] Mở spark-sql tương tác
 	$(COMPOSE_LAKE) exec spark /opt/spark/bin/spark-sql

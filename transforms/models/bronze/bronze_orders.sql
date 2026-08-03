@@ -1,16 +1,24 @@
--- Bronze: data/orders.csv -> bronze.orders  (bản DuckDB, tương đương ingest_orders.py của Spark)
+-- Bronze: data/orders.csv -> bronze.orders
+--
+-- NGUỒN DUY NHẤT của logic bronze cho bảng orders. Cả hai engine cùng chạy chính file này:
+--   duckdb : dbt build           -> bronze_source() nở thành read_csv(...)
+--   spark  : ingestion/ingest.py -> bronze_source() thay bằng tên temp view
+--
 -- Chuẩn hoá text + gắn cờ chất lượng. Không lọc bỏ dòng — bronze giữ nguyên số dòng nguồn.
+{% set source_file = 'orders.csv' %}
+{% set columns = {
+    'order_id': 'integer!',
+    'order_date': 'date',
+    'customer_id': 'integer',
+    'zip': 'string',
+    'order_status': 'string',
+    'payment_method': 'string',
+    'device_type': 'string',
+    'order_source': 'string'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('orders.csv', {
-        'order_id': 'INTEGER',
-        'order_date': 'DATE',
-        'customer_id': 'INTEGER',
-        'zip': 'VARCHAR',
-        'order_status': 'VARCHAR',
-        'payment_method': 'VARCHAR',
-        'device_type': 'VARCHAR',
-        'order_source': 'VARCHAR'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -26,19 +34,22 @@ normalized as (
     from source
 ),
 
+-- concat_ws bỏ qua NULL nên chỉ những case đúng mới xuất hiện trong chuỗi lý do.
+-- Không lỗi nào -> chuỗi rỗng -> nullif trả NULL -> _is_valid = true.
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["customer_id is null", "customer_id_missing"],
-            ["order_date is null", "order_date_missing"],
-            ["order_status not in ('created','paid','shipped','delivered','returned','cancelled')", "status_unknown"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when customer_id is null then 'customer_id_missing' end,
+            case when order_date is null then 'order_date_missing' end,
+            case when order_status not in ('created','paid','shipped','delivered','returned','cancelled') then 'status_unknown' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('orders.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

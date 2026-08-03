@@ -1,17 +1,21 @@
--- Bronze: data/promotions.csv -> bronze.promotions  (tương đương ingest_promotions.py)
+-- Bronze: data/promotions.csv -> bronze.promotions
+-- Nguồn duy nhất của logic bronze cho bảng promotions (xem macros/bronze_helpers.sql).
+{% set source_file = 'promotions.csv' %}
+{% set columns = {
+    'promo_id': 'string!',
+    'promo_name': 'string',
+    'promo_type': 'string',
+    'discount_value': 'double',
+    'start_date': 'date',
+    'end_date': 'date',
+    'applicable_category': 'string',
+    'promo_channel': 'string',
+    'stackable_flag': 'integer',
+    'min_order_value': 'double'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('promotions.csv', {
-        'promo_id': 'VARCHAR',
-        'promo_name': 'VARCHAR',
-        'promo_type': 'VARCHAR',
-        'discount_value': 'DOUBLE',
-        'start_date': 'DATE',
-        'end_date': 'DATE',
-        'applicable_category': 'VARCHAR',
-        'promo_channel': 'VARCHAR',
-        'stackable_flag': 'INTEGER',
-        'min_order_value': 'DOUBLE'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -34,21 +38,24 @@ normalized as (
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["start_date is null", "start_date_missing"],
-            ["end_date is null", "end_date_missing"],
-            ["end_date < start_date", "end_before_start"],
-            ["discount_value is null or discount_value <= 0", "discount_value_invalid"],
-            ["promo_type = 'percentage' and discount_value > 100", "percentage_above_100"],
-            ["min_order_value < 0", "min_order_value_negative"],
-            ["promo_type not in ('fixed','percentage')", "promo_type_unknown"],
-            ["promo_channel not in ('all_channels','email','in_store','online','social_media')", "promo_channel_unknown"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when start_date is null then 'start_date_missing' end,
+            case when end_date is null then 'end_date_missing' end,
+            -- Kết thúc trước khi bắt đầu -> khoảng thời gian rỗng, khuyến mãi không bao giờ chạy
+            case when end_date < start_date then 'end_before_start' end,
+            case when discount_value is null or discount_value <= 0 then 'discount_value_invalid' end,
+            -- Giảm giá quá 100% nghĩa là trả tiền cho khách để họ mua hàng
+            case when promo_type = 'percentage' and discount_value > 100 then 'percentage_above_100' end,
+            case when min_order_value < 0 then 'min_order_value_negative' end,
+            case when promo_type not in ('fixed','percentage') then 'promo_type_unknown' end,
+            case when promo_channel not in ('all_channels','email','in_store','online','social_media') then 'promo_channel_unknown' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('promotions.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

@@ -1,26 +1,31 @@
--- Bronze: data/inventory.csv -> bronze.inventory  (tương đương ingest_inventory.py)
+-- Bronze: data/inventory.csv -> bronze.inventory
+-- Nguồn duy nhất của logic bronze cho bảng inventory (xem macros/bronze_helpers.sql).
+--
 -- Ảnh chụp tồn kho theo tháng. Nguồn đã phi chuẩn hoá sẵn (product_name/category/segment)
 -- và có sẵn cột dẫn xuất (year, month) — bronze giữ nguyên, việc bỏ cột thừa là của silver.
+{% set source_file = 'inventory.csv' %}
+{% set columns = {
+    'snapshot_date': 'date!',
+    'product_id': 'integer!',
+    'stock_on_hand': 'integer',
+    'units_received': 'integer',
+    'units_sold': 'integer',
+    'stockout_days': 'integer',
+    'days_of_supply': 'double',
+    'fill_rate': 'double',
+    'stockout_flag': 'integer',
+    'overstock_flag': 'integer',
+    'reorder_flag': 'integer',
+    'sell_through_rate': 'double',
+    'product_name': 'string',
+    'category': 'string',
+    'segment': 'string',
+    'year': 'integer',
+    'month': 'integer'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('inventory.csv', {
-        'snapshot_date': 'DATE',
-        'product_id': 'INTEGER',
-        'stock_on_hand': 'INTEGER',
-        'units_received': 'INTEGER',
-        'units_sold': 'INTEGER',
-        'stockout_days': 'INTEGER',
-        'days_of_supply': 'DOUBLE',
-        'fill_rate': 'DOUBLE',
-        'stockout_flag': 'INTEGER',
-        'overstock_flag': 'INTEGER',
-        'reorder_flag': 'INTEGER',
-        'sell_through_rate': 'DOUBLE',
-        'product_name': 'VARCHAR',
-        'category': 'VARCHAR',
-        'segment': 'VARCHAR',
-        'year': 'INTEGER',
-        'month': 'INTEGER'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -48,26 +53,31 @@ normalized as (
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["stock_on_hand < 0", "stock_on_hand_negative"],
-            ["units_received < 0", "units_received_negative"],
-            ["units_sold < 0", "units_sold_negative"],
-            ["stockout_days < 0", "stockout_days_negative"],
-            ["fill_rate not between 0 and 1", "fill_rate_out_of_range"],
-            ["sell_through_rate not between 0 and 1", "sell_through_out_of_range"],
-            ["stockout_flag not in (0, 1)", "stockout_flag_invalid"],
-            ["overstock_flag not in (0, 1)", "overstock_flag_invalid"],
-            ["reorder_flag not in (0, 1)", "reorder_flag_invalid"],
-            ["year <> year(snapshot_date)", "year_mismatch"],
-            ["month <> month(snapshot_date)", "month_mismatch"],
-            ["category not in ('casual','genz','outdoor','streetwear')", "category_unknown"],
-            ["segment not in ('activewear','all-weather','balanced','everyday','performance','premium','standard','trendy')", "segment_unknown"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when stock_on_hand < 0 then 'stock_on_hand_negative' end,
+            case when units_received < 0 then 'units_received_negative' end,
+            case when units_sold < 0 then 'units_sold_negative' end,
+            case when stockout_days < 0 then 'stockout_days_negative' end,
+            -- fill_rate và sell_through_rate là tỷ lệ -> bắt buộc nằm trong [0, 1]
+            case when fill_rate not between 0 and 1 then 'fill_rate_out_of_range' end,
+            case when sell_through_rate not between 0 and 1 then 'sell_through_out_of_range' end,
+            -- Các cờ chỉ được nhận 0 hoặc 1
+            case when stockout_flag not in (0, 1) then 'stockout_flag_invalid' end,
+            case when overstock_flag not in (0, 1) then 'overstock_flag_invalid' end,
+            case when reorder_flag not in (0, 1) then 'reorder_flag_invalid' end,
+            -- year/month là cột dẫn xuất từ snapshot_date. Lệch nhau nghĩa là nguồn tính sai,
+            -- và mọi report nhóm theo year/month sẽ ra số sai mà không ai biết.
+            case when year <> year(snapshot_date) then 'year_mismatch' end,
+            case when month <> month(snapshot_date) then 'month_mismatch' end,
+            case when category not in ('casual','genz','outdoor','streetwear') then 'category_unknown' end,
+            case when segment not in ('activewear','all-weather','balanced','everyday','performance','premium','standard','trendy') then 'segment_unknown' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('inventory.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

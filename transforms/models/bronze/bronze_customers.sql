@@ -1,14 +1,18 @@
--- Bronze: data/customers.csv -> bronze.customers  (tương đương ingest_customers.py)
+-- Bronze: data/customers.csv -> bronze.customers
+-- Nguồn duy nhất của logic bronze cho bảng customers (xem macros/bronze_helpers.sql).
+{% set source_file = 'customers.csv' %}
+{% set columns = {
+    'customer_id': 'integer!',
+    'zip': 'string',
+    'city': 'string',
+    'signup_date': 'date',
+    'gender': 'string',
+    'age_group': 'string',
+    'acquisition_channel': 'string'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('customers.csv', {
-        'customer_id': 'INTEGER',
-        'zip': 'VARCHAR',
-        'city': 'VARCHAR',
-        'signup_date': 'DATE',
-        'gender': 'VARCHAR',
-        'age_group': 'VARCHAR',
-        'acquisition_channel': 'VARCHAR'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -27,18 +31,19 @@ normalized as (
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["signup_date is null", "signup_date_missing"],
-            ["zip is null", "zip_missing"],
-            ["gender not in ('female','male','non-binary')", "gender_unknown"],
-            ["age_group not in ('18-24','25-34','35-44','45-54','55+')", "age_group_unknown"],
-            ["acquisition_channel not in ('direct','email_campaign','organic_search','paid_search','referral','social_media')", "channel_unknown"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when signup_date is null then 'signup_date_missing' end,
+            case when zip is null then 'zip_missing' end,
+            case when gender not in ('female','male','non-binary') then 'gender_unknown' end,
+            case when age_group not in ('18-24','25-34','35-44','45-54','55+') then 'age_group_unknown' end,
+            case when acquisition_channel not in ('direct','email_campaign','organic_search','paid_search','referral','social_media') then 'channel_unknown' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('customers.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

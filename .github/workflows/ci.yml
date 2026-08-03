@@ -37,7 +37,7 @@ jobs:
 
       - name: Test (đăng ký nguồn khớp connector + CSV)
         run: |
-          pip install --quiet pytest
+          pip install --quiet pytest pyyaml
           pytest tests -q
 
       - name: Kiểm tra compose hợp lệ

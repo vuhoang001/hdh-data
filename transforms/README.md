@@ -31,8 +31,9 @@ Ba macro làm cho khác biệt đó biến mất khỏi code silver/gold:
 
 Kết quả: `select * from bronze.orders` chạy y hệt ở cả hai môi trường.
 
-`bronze_helpers.sql` chứa `read_source_csv` / `invalid_reason` / `bronze_audit` — bản DuckDB
-của đúng những gì `ingestion/common/` làm ở Spark, **giữ nguyên tên nhãn lỗi** để truy vết được.
+`bronze_helpers.sql` chứa `bronze_source()` — **seam duy nhất** giữa hai engine. Ở dbt nó nở
+thành `read_csv(...)`; ở Spark, `ingestion/common/sql_model.py` thay nó bằng tên temp view.
+Mọi thứ còn lại trong model bronze là SQL thuần, portable giữa DuckDB và Spark SQL.
 
 ## `models/bronze/` dùng để làm gì nếu Spark đã ghi bronze rồi?
 
@@ -40,16 +41,17 @@ của đúng những gì `ingestion/common/` làm ở Spark, **giữ nguyên tê
 `dbt_project.yml`). Ở target `trino` chúng bị tắt vì Spark đã ghi Iceberg — nhưng chúng
 không phải code chết: đó là thứ làm cho môi trường nhẹ chạy được **mà không cần Spark**.
 
-Đổi lại, cùng một rule chất lượng tồn tại ở hai nơi:
+Và chúng cũng **không bị nhân đôi**: ở target `trino`, `ingestion/ingest.py` đọc chính các
+file này rồi chạy bằng `spark.sql()`. Một bản logic, hai engine thực thi.
 
 ```text
-ingestion/connectors/ingest_orders.py    ← PySpark, cho lakehouse
-transforms/models/bronze/bronze_orders.sql ← SQL, cho DuckDB
+transforms/models/bronze/bronze_orders.sql
+    ├─ dbt build  --target duckdb   → bảng trong hdh.duckdb
+    └─ spark-submit ingest.py       → bảng Iceberg trên MinIO
 ```
 
-**Sửa một bên mà quên bên kia = hai môi trường cho hai kết quả khác nhau, im lặng.**
-`tests/test_bronze_parity.py` so tập nhãn `_invalid_reason` của từng cặp và fail nếu lệch.
-Chạy `pytest tests -q` sau mỗi lần đổi rule bronze.
+**Ràng buộc kèm theo:** mọi biểu thức ở đây phải là SQL portable giữa DuckDB và Spark SQL.
+`tests/test_bronze_models.py` kiểm khuôn khai báo; chạy `pytest tests -q` sau mỗi lần sửa.
 
 ## Materialization theo layer
 

@@ -137,6 +137,7 @@ services:
       args:
         SPARK_BASE_IMAGE: ${SPARK_BASE_IMAGE}
         ICEBERG_VERSION: ${ICEBERG_VERSION}
+        PYYAML_VERSION: ${PYYAML_VERSION}
     image: hdh-spark:${ICEBERG_VERSION}
     container_name: hdh-spark
     depends_on:
@@ -146,13 +147,19 @@ services:
       <<: [*s3-env, *iceberg-env]
       SPARK_CONF_TEMPLATE: /opt/spark/conf-template/spark-defaults.conf.tmpl
       SPARK_DATA_DIR: ${SPARK_DATA_DIR}
-      # spark-submit chỉ add thư mục chứa script vào sys.path (vd connectors/),
-      # nên phải trỏ thêm vào gốc ingestion/ để "from common import ..." thấy package
+      # spark-submit chỉ add thư mục chứa script vào sys.path, nên phải trỏ thêm vào gốc
+      # ingestion/ để "from common import ..." thấy package
       PYTHONPATH: ${SPARK_JOBS_DIR}
+      # Model bronze DÙNG CHUNG với dbt — Spark đọc chính các file .sql mà dbt build
+      SPARK_BRONZE_MODELS_DIR: ${SPARK_MODELS_DIR}/bronze
+      SPARK_SOURCES_FILE: ${SPARK_JOBS_DIR}/config/sources.yml
     volumes:
       - ./ingestion:${SPARK_JOBS_DIR}:ro
       - ./engine-runners/spark-runner:/opt/spark/conf-template:ro
       - ./data:${SPARK_DATA_DIR}:ro
+      # CHỈ ĐỌC: Spark chạy model SQL của dbt nhưng không được sinh ra file gì trong đó
+      # (target/, logs/ là của container dbt, và nó chạy bằng UID khác).
+      - ./transforms/models:${SPARK_MODELS_DIR}:ro
     # Giữ container sống để exec spark-submit vào
     command: ["tail", "-f", "/dev/null"]
     networks: [hdh]

@@ -5,6 +5,13 @@ FROM ${SPARK_BASE_IMAGE}
 
 USER root
 ARG ICEBERG_VERSION
+ARG PYYAML_VERSION
+
+# pyyaml: ingestion/common/spec.py đọc ingestion/config/sources.yml lúc chạy.
+# Image Spark gốc không có sẵn. Pin chính xác (==) như mọi version khác trong repo.
+RUN set -eux; \
+    test -n "${PYYAML_VERSION}"; \
+    pip install --no-cache-dir "pyyaml==${PYYAML_VERSION}"
 
 # Iceberg runtime + AWS bundle (S3FileIO) để Spark đọc/ghi được Iceberg trên MinIO
 RUN set -eux; \

@@ -1,93 +1,77 @@
 """
-Khung chạy chung cho mọi bronze job.
+Khung chạy chung của MỌI bảng bronze — không còn code riêng cho từng bảng.
 
-Trước đây 13 file ingest_*.py đều lặp y hệt nhau phần: khai báo APP_NAME/NAMESPACE/TABLE/
-SOURCE_CSV, parse_args(), run(), main(). Chỉ SCHEMA và transform() là khác nhau thật.
+Luồng: đọc nguồn -> chạy SQL dùng chung -> gắn cột audit -> ghi Iceberg -> log số dòng.
 
-Giờ mỗi job chỉ khai báo phần riêng của nó qua BronzeJob rồi gọi run_job(). Luồng
-đọc -> transform -> gắn cột audit -> ghi Iceberg -> log số dòng nằm gọn ở đây, sửa một
-lần là cả 13 job đổi theo.
+Điều đáng chú ý là những gì KHÔNG còn ở đây: schema, chuẩn hoá text, luật chất lượng, cột
+dẫn xuất. Toàn bộ phần đó nằm trong transforms/models/bronze/bronze_<bảng>.sql — chính file
+mà dbt build ở môi trường DuckDB. Trước đây chúng được viết lại lần thứ hai bằng PySpark
+trong 13 file ingest_*.py, và hai bản có thể lệch nhau mà không ai biết.
+
+Spark chạy được đoạn SQL đó nguyên văn nhờ spark.sql(): thứ duy nhất phải thay là quan hệ
+nguồn — {{ bronze_source(...) }} trở thành tên temp view mà job này vừa đăng ký.
 """
-import argparse
-from dataclasses import dataclass, field
-from typing import Callable, List, Mapping, Optional
+from typing import Optional
 
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import StructType
+from pyspark.sql import SparkSession
 
-from common import config
-from common.iceberg import (
-    add_audit_columns,
-    count_table_rows,
-    create_namespace,
-    write_iceberg_table,
-)
+from common import config, spec, sql_model
+from common.iceberg import count_table_rows, create_namespace, write_iceberg_table
 from common.io import read_source
 from common.session import build_spark_session, get_logger
 
+# Tên temp view mà model SQL đọc vào. Chỉ sống trong phiên Spark của job này.
+SOURCE_VIEW = "bronze_source_input"
 
-@dataclass(frozen=True)
-class BronzeJob:
-    """Mô tả một bảng bronze. Chỉ chứa phần RIÊNG của bảng đó.
 
-    table        : tên bảng trong namespace bronze, vd "orders" -> iceberg.bronze.orders
-    source_csv   : tên file trong thư mục data, vd "orders.csv"
-    schema       : schema tường minh của nguồn (Spark áp theo THỨ TỰ cột, bỏ qua header)
-    transform    : chuẩn hoá + gắn cờ chất lượng. Không được lọc bỏ dòng — bronze giữ
-                   nguyên số dòng nguồn.
-    partition_by : hàm trả về danh sách cột partition, hoặc None nếu để một file.
-                   Phải là HÀM vì F.months()/F.years()/F.bucket() cần SparkContext đã khởi tạo.
-    extra_metrics: {nhãn: điều kiện SQL} để log thêm số liệu riêng của bảng,
-                   vd {"ngày bán lỗ": "_margin_negative"}.
-    source_type  : loại nguồn, phải khớp `type:` khai trong sources.yml và một reader đã
-                   đăng ký ở common/io.py. Đổi giá trị này là chuyển bảng sang nguồn khác
-                   (vd "postgres" ở production) mà không đụng transform/silver/gold.
+def _resolve_source(source_spec: "spec.SourceSpec", model: "sql_model.BronzeModel") -> str:
+    """Định danh nguồn, tuỳ loại: CSV là đường dẫn file, DB là tên bảng.
+
+    `source_file` được khai trong model SQL vì dbt cũng cần nó (dbt không đọc được YAML).
+    Ở đây nó được diễn giải theo `type` khai trong sources.yml.
     """
-
-    table: str
-    source_csv: str
-    schema: StructType
-    transform: Callable[[DataFrame], DataFrame]
-    partition_by: Optional[Callable[[], List]] = None
-    extra_metrics: Mapping[str, str] = field(default_factory=dict)
-    source_type: str = "csv"
+    if source_spec.type == "csv":
+        return config.source_path(model.source_file)
+    # Loại nguồn khác (postgres, ...) tự diễn giải định danh trong reader của mình.
+    return model.source_file
 
 
-def _parse_args(job: BronzeJob) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=f"Ingest {job.source_csv} vào bronze layer"
-    )
-    parser.add_argument("--source-csv", default=config.source_path(job.source_csv))
-    parser.add_argument("--table", default=config.bronze_table(job.table))
-    return parser.parse_args()
+def run(table: str) -> None:
+    """Ingest một bảng bronze từ nguồn vào Iceberg."""
+    logger = get_logger(f"bronze.{table}")
 
+    # Đọc cấu hình TRƯỚC khi dựng Spark: khai sai thì hỏng ngay trong vài mili giây,
+    # thay vì sau 30 giây chờ JVM khởi động.
+    source_spec = spec.load(table, config.SOURCES_FILE)
+    model = sql_model.load(table, config.MODELS_DIR)
+    target_table = config.bronze_table(table)
 
-def _ingest(spark: SparkSession, job: BronzeJob, source_csv: str, table: str, logger) -> None:
-    logger.info("Đọc %s (nguồn: %s)", source_csv, job.source_type)
-    df = read_source(spark, job.source_type, source_csv, job.schema)
-
-    bronze_df = add_audit_columns(job.transform(df), source_csv)
-
-    create_namespace(spark, config.BRONZE_NAMESPACE)
-    logger.info("Ghi bảng %s", table)
-    write_iceberg_table(bronze_df, table, job.partition_by() if job.partition_by else None)
-
-    written = spark.table(table)
-    total = count_table_rows(spark, table)
-    invalid = written.filter("not _is_valid").count()
-
-    report = [f"{total} dòng (hợp lệ={total - invalid}, lỗi={invalid})"]
-    for label, condition in job.extra_metrics.items():
-        report.append(f"{written.filter(condition).count()} {label}")
-    logger.info("%s: %s", table, ", ".join(report))
-
-
-def run_job(job: BronzeJob) -> None:
-    """Điểm vào chuẩn của mọi bronze job: dựng Spark, chạy ingest, luôn dọn session."""
-    args = _parse_args(job)
-    logger = get_logger(f"bronze.{job.table}")
-    spark = build_spark_session(f"hdh-bronze-{job.table.replace('_', '-')}")
+    spark: Optional[SparkSession] = None
     try:
-        _ingest(spark, job, args.source_csv, args.table, logger)
+        spark = build_spark_session(f"hdh-bronze-{table.replace('_', '-')}")
+
+        source = _resolve_source(source_spec, model)
+        logger.info("Đọc %s (nguồn: %s)", source, source_spec.type)
+        read_source(spark, source_spec.type, source, model.schema) \
+            .createOrReplaceTempView(SOURCE_VIEW)
+
+        # Đây là chỗ Spark chạy CHÍNH đoạn SQL mà dbt build ở môi trường DuckDB.
+        # Cột audit (_source_file, _ingested_at) do chính SQL sinh ra, không gắn thêm ở
+        # Python nữa — nếu không sẽ có hai cột trùng tên.
+        bronze_df = spark.sql(model.render(SOURCE_VIEW))
+
+        create_namespace(spark, config.BRONZE_NAMESPACE)
+        logger.info("Ghi bảng %s", target_table)
+        write_iceberg_table(bronze_df, target_table, source_spec.partition_columns())
+
+        written = spark.table(target_table)
+        total = count_table_rows(spark, target_table)
+        invalid = written.filter("not _is_valid").count()
+
+        report = [f"{total} dòng (hợp lệ={total - invalid}, lỗi={invalid})"]
+        for label, condition in source_spec.extra_metrics.items():
+            report.append(f"{written.filter(condition).count()} {label}")
+        logger.info("%s: %s", target_table, ", ".join(report))
     finally:
-        spark.stop()
+        if spark is not None:
+            spark.stop()

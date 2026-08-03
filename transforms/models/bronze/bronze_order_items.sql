@@ -1,14 +1,18 @@
--- Bronze: data/order_items.csv -> bronze.order_items  (tương đương ingest_order_items.py)
+-- Bronze: data/order_items.csv -> bronze.order_items
+-- Nguồn duy nhất của logic bronze cho bảng order_items (xem macros/bronze_helpers.sql).
+{% set source_file = 'order_items.csv' %}
+{% set columns = {
+    'order_id': 'integer!',
+    'product_id': 'integer',
+    'quantity': 'integer',
+    'unit_price': 'double',
+    'discount_amount': 'double',
+    'promo_id': 'string',
+    'promo_id_2': 'string'
+} %}
+
 with source as (
-    select * from {{ read_source_csv('order_items.csv', {
-        'order_id': 'INTEGER',
-        'product_id': 'INTEGER',
-        'quantity': 'INTEGER',
-        'unit_price': 'DOUBLE',
-        'discount_amount': 'DOUBLE',
-        'promo_id': 'VARCHAR',
-        'promo_id_2': 'VARCHAR'
-    }) }}
+    select * from {{ bronze_source(source_file, columns) }}
 ),
 
 normalized as (
@@ -27,17 +31,18 @@ normalized as (
 flagged as (
     select
         *,
-        {{ invalid_reason([
-            ["product_id is null", "product_id_missing"],
-            ["quantity is null or quantity <= 0", "quantity_invalid"],
-            ["unit_price is null or unit_price < 0", "unit_price_invalid"],
-            ["discount_amount < 0", "discount_negative"]
-        ]) }} as _invalid_reason
+        nullif(concat_ws(', ',
+            case when product_id is null then 'product_id_missing' end,
+            case when quantity is null or quantity <= 0 then 'quantity_invalid' end,
+            case when unit_price is null or unit_price < 0 then 'unit_price_invalid' end,
+            case when discount_amount < 0 then 'discount_negative' end
+        ), '') as _invalid_reason
     from normalized
 )
 
 select
     *,
     _invalid_reason is null as _is_valid,
-    {{ bronze_audit('order_items.csv') }}
+    '{{ source_file }}'     as _source_file,
+    current_timestamp       as _ingested_at
 from flagged

@@ -1,79 +1,98 @@
 # ingestion/
 
-Đưa dữ liệu thô vào **bronze layer** dưới dạng bảng Iceberg. Chỉ dùng ở môi trường lakehouse
-(`make lake-*`); ở môi trường DuckDB, bronze do dbt làm — xem `transforms/models/bronze/`.
+Đưa dữ liệu thô vào **bronze layer** dưới dạng bảng Iceberg, chỉ dùng ở môi trường lakehouse
+(`make lake-*`).
 
 ```text
 ingestion/
-├── config/sources.yml    # ĐĂNG KÝ NGUỒN — nơi duy nhất liệt kê 13 bảng bronze
-├── common/               # hạ tầng dùng chung, không biết gì về bảng cụ thể
-└── connectors/           # 13 file, mỗi file là business logic của một bảng
+├── ingest.py             # ĐIỂM VÀO DUY NHẤT — chạy chung cho mọi bảng
+├── config/sources.yml    # ĐĂNG KÝ NGUỒN — hạ tầng ingest của 13 bảng
+└── common/               # hạ tầng dùng chung, không biết gì về bảng cụ thể
 ```
 
-## Quy tắc phân chia
+Không có thư mục `connectors/`, và đó là điểm chính của thư mục này.
 
-`common/` chứa thứ **đúng với mọi bảng**. `connectors/` chứa thứ **chỉ đúng với một bảng**.
-Ranh giới này là lý do 13 file connector không lặp lại nhau.
+## Logic bronze KHÔNG nằm ở đây
 
-| Module | Vai trò |
-| --- | --- |
-| `common/config.py` | Nơi duy nhất biết tên catalog, namespace bronze, thư mục dữ liệu — đọc từ `.env` |
-| `common/job.py` | `BronzeJob` + `run_job()` — luồng đọc → transform → cột audit → ghi Iceberg → log |
-| `common/session.py` | SparkSession + logger |
-| `common/io.py` | Đọc CSV với schema tường minh |
-| `common/iceberg.py` | Cột audit `_source_file`/`_ingested_at` + ghi bảng Iceberg |
+Schema, chuẩn hoá text, luật chất lượng, cột dẫn xuất và cột audit của mọi bảng nằm ở
+**`transforms/models/bronze/bronze_<bảng>.sql`** — chính file mà dbt build ở môi trường
+DuckDB. Spark chạy nguyên văn file đó qua `spark.sql()`.
 
-Không file connector nào tự ghép chuỗi `"iceberg.bronze.orders"` hay
-`"/opt/spark/data/orders.csv"`. Chúng khai báo `table="orders"`, `source_csv="orders.csv"`,
-còn `config.py` dựng đường dẫn đầy đủ từ `.env`.
-
-## Một connector trông như thế nào
-
-Chỉ ba phần: `SCHEMA`, `transform()`, và khai báo `BronzeJob`.
-
-```python
-from common import BronzeJob, run_job
-
-SCHEMA = StructType([...])                    # schema tường minh của CSV nguồn
-
-def transform(df):                            # chuẩn hoá text + gắn cờ chất lượng
-    ...                                       # KHÔNG lọc bỏ dòng
-
-JOB = BronzeJob(
-    table="orders",
-    source_csv="orders.csv",
-    schema=SCHEMA,
-    transform=transform,
-    partition_by=partition_columns,           # bỏ đi nếu để nguyên một file
-)
-
-if __name__ == "__main__":
-    run_job(JOB)
+```text
+        transforms/models/bronze/bronze_orders.sql      ← MỘT bản logic
+                        │
+        ┌───────────────┴────────────────┐
+        ▼                                ▼
+   dbt-duckdb                       ingestion/ingest.py
+   render Jinja                     common/sql_model.py render
+   bronze_source() → read_csv(...)  bronze_source() → tên temp view
+        ▼                                ▼
+   bảng trong hdh.duckdb            bảng Iceberg trên MinIO
 ```
+
+Thứ duy nhất khác nhau giữa hai engine là **quan hệ nguồn**. Mọi thứ còn lại — kể cả
+`_source_file` và `_ingested_at` — do chính đoạn SQL đó sinh ra, nên hai môi trường tạo
+ra bộ cột giống hệt nhau mà không cần ai đồng bộ với ai.
+
+> **Trước đây bronze có hai bản cài đặt** (13 file `connectors/ingest_*.py` bằng PySpark +
+> 13 file `.sql` cho DuckDB) và phải có `tests/test_bronze_parity.py` canh cho chúng khỏi
+> lệch. Test đó chỉ so được *tập nhãn* `_invalid_reason`, không so được điều kiện bên
+> trong — đổi `< 0` thành `<= 0` ở một bên thì nó vẫn xanh. Giờ chỉ còn một bản, nên lệch
+> không còn khả năng xảy ra.
+
+**Đổi lại:** mọi biểu thức trong model bronze phải là SQL portable, chạy giống nhau trên
+DuckDB lẫn Spark SQL. Các hàm đang dùng đều đạt: `trim`, `lower`, `nullif`, `concat_ws`,
+`case/when`, `is null`, `not in`, `not between`, `year()`, `month()`, `current_timestamp`.
+Cần cú pháp riêng của một engine thì hoặc viết lại cho portable, hoặc dùng SQLGlot để
+transpile — **đừng tách thành hai bản cài đặt lần nữa**.
+
+## Ranh giới hai file cấu hình
+
+| File | Chứa gì | Ai đọc |
+| --- | --- | --- |
+| `transforms/models/bronze/bronze_<bảng>.sql` | **Logic** — schema, chuẩn hoá, luật chất lượng, cột dẫn xuất | dbt **và** Spark |
+| `ingestion/config/sources.yml` | **Hạ tầng ingest** — nguồn lấy ở đâu, partition Iceberg kiểu gì | chỉ Spark |
+
+Cố ý không chồng lấn. Schema nằm trong file SQL chứ không phải YAML vì **dbt không đọc
+được YAML** — để trong YAML là lại có hai nơi khai schema.
+
+## Các module trong `common/`
+
+| Module | Vai trò | Cần pyspark? |
+| --- | --- | --- |
+| `config.py` | Nơi duy nhất biết tên catalog, namespace, thư mục dữ liệu — đọc từ `.env` | không |
+| `sql_model.py` | Đọc model bronze dùng chung với dbt, render cho Spark | chỉ `.schema` |
+| `spec.py` | Đọc `sources.yml`, phân tích chuỗi `partition_by` | chỉ `partition_columns()` |
+| `job.py` | Khung chạy: đọc nguồn → chạy SQL → ghi Iceberg → log | có |
+| `session.py` | SparkSession + logger | có |
+| `io.py` | Đọc nguồn theo loại (`SOURCE_READERS`) | có |
+| `iceberg.py` | Ghi bảng Iceberg | có |
+
+`sql_model.py` và `spec.py` **cố ý không import pyspark ở cấp module** để `tests/` và job
+lint trên CI chạy được mà không phải cài cả bộ Spark 300MB.
+
+## Chạy
+
+```bash
+make lake-ingest-orders     # một bảng
+make lake-ingest            # tất cả bảng khai trong sources.yml
+make lake-ingest-list       # xem danh sách bảng đã khai
+```
+
+Bên dưới là `spark-submit ingest.py --table orders`.
 
 ## Hợp đồng của bronze layer
 
-1. **Giữ nguyên số dòng nguồn.** `transform()` không được lọc bỏ dòng. Dòng hỏng được
-   *gắn cờ* `_is_valid = false` kèm `_invalid_reason`, việc loại bỏ là chuyện của silver.
-2. **Schema tường minh, áp theo thứ tự cột.** Spark bỏ qua tên trong header, nên đổi tên
-   cột ngay ở `SCHEMA` được (`Date` → `sale_date`). Cái giá: nếu nguồn đổi thứ tự cột,
-   dữ liệu vào nhầm cột mà không có lỗi nào báo.
-3. **Mọi bảng có cột audit** `_source_file` và `_ingested_at`, do `common/` gắn tự động.
+1. **Giữ nguyên số dòng nguồn.** Model không được lọc bỏ dòng. Dòng hỏng được *gắn cờ*
+   `_is_valid = false` kèm `_invalid_reason`; việc loại bỏ là chuyện của silver.
+2. **Schema tường minh, áp theo thứ tự cột.** Cả hai engine bỏ qua tên trong header, nên
+   đổi tên cột ngay ở khối `{% set columns %}` được (`Date` → `sale_date`). Cái giá: nếu
+   nguồn đổi *thứ tự* cột, dữ liệu vào nhầm cột mà không có lỗi nào báo.
+3. **Mọi bảng có cột audit** `_source_file` và `_ingested_at`, do chính model SQL sinh ra.
 
 ## Khi nguồn không còn là CSV (local → production)
 
-Ở đây nguồn là file CSV trong `data/`. Production thường lấy từ Postgres, một API, hay
-Parquet trên S3. **Chỗ đổi chỉ có một**, vì `BronzeJob` đã tách sẵn ba thứ:
-
-```python
-JOB = BronzeJob(
-    source_csv="orders.csv",   # NGUỒN  ← thứ duy nhất đổi
-    transform=transform,       # RULE làm sạch — không đổi
-    table="orders",            # ĐÍCH bronze — không đổi
-)
-```
-
-Chuyển `orders` sang đọc từ Postgres cần đúng ba thay đổi:
+`SOURCE_READERS` trong `common/io.py` là seam. Chuyển `orders` sang Postgres:
 
 ```python
 # 1. ingestion/common/io.py — viết reader
@@ -87,79 +106,50 @@ SOURCE_READERS = {"csv": read_csv, "postgres": read_jdbc}
 ```yaml
 # 3. ingestion/config/sources.yml
   - table: orders
-    file: jdbc:postgresql://.../orders
     type: postgres          # ← đổi ở đây
 ```
 
-Rồi thêm `source_type="postgres"` vào `BronzeJob` của connector đó. `transform()`, mọi model
-silver/gold, và mọi test dbt **không sửa dòng nào** — chúng chỉ biết bảng bronze, không biết
-dữ liệu từ đâu tới. Đó là toàn bộ giá trị của việc có một lớp bronze.
+Model SQL, silver, gold và mọi test dbt **không sửa dòng nào**.
 
-`type:` không phải chú thích trang trí: `tests/test_sources_registry.py` đối chiếu nó với
-`SOURCE_READERS`, nên khai một loại chưa có reader là fail ngay, không đợi tới lúc chạy Spark.
+`type:` không phải chú thích trang trí: `tests/test_bronze_models.py` đối chiếu nó với
+`SOURCE_READERS`, nên khai một loại chưa có reader là fail ngay.
+
+> **Còn thiếu ở phía DuckDB:** `bronze_source()` hiện chỉ sinh `read_csv(...)`. Muốn môi
+> trường local cũng đọc được Postgres thì macro cần dispatch theo `type` (DuckDB có sẵn
+> `postgres_scan`). Chưa làm — nên hiện tại `type: postgres` mới chỉ đúng cho lakehouse.
 
 ## Chỗ CHƯA sẵn sàng cho production: chế độ ghi
 
 Đọc nguồn thì đã có seam. **Ghi thì chưa.** `common/iceberg.py` ghi bằng `createOrReplace()`
-— tức ghi đè toàn bộ bảng mỗi lần chạy:
-
-```python
-writer.tableProperty("format-version", "2").createOrReplace()
-```
+— ghi đè toàn bộ bảng mỗi lần chạy.
 
 Điều này đúng ở đây vì nguồn là file CSV tĩnh và bảng lớn nhất chỉ 714k dòng — nạp lại toàn
-bộ mất vài giây và cho tính **idempotent** miễn phí (chạy 1 lần hay 10 lần đều ra kết quả y
-hệt, không nhân đôi dữ liệu).
-
-Nó **không dùng được ở production** với bảng 500 triệu dòng nạp hàng ngày. Lúc đó cần ba
-thứ mà hiện tại chưa có:
+bộ mất vài giây và cho tính **idempotent** miễn phí. Nó **không dùng được** với bảng 500
+triệu dòng nạp hàng ngày. Lúc đó cần ba thứ hiện chưa có:
 
 | Cần gì | Vì sao | Đụng vào đâu |
 | --- | --- | --- |
-| **Watermark / incremental** | Chỉ đọc dòng đổi từ lần chạy trước, không quét cả bảng nguồn | `io.py` + lưu trạng thái lần chạy |
+| **Watermark / incremental** | Chỉ đọc dòng đổi từ lần chạy trước | `io.py` + lưu trạng thái lần chạy |
 | **MERGE INTO thay vì replace** | Ghi đè cả bảng 500M dòng mỗi ngày là bất khả thi | `iceberg.py` |
-| **Backfill theo khoảng ngày** | Chạy lại một tháng cũ mà không đụng dữ liệu khác | tham số cho `run_job()` |
+| **Backfill theo khoảng ngày** | Chạy lại một tháng cũ mà không đụng dữ liệu khác | tham số cho `job.run()` |
 
 Đây là **giới hạn có thật, không phải thiếu sót do quên**. Xây incremental cho một file CSV
 tĩnh là viết code không ai chạy được. Nhưng khi nguồn thật xuất hiện, đây là việc lớn nhất —
 lớn hơn nhiều so với đổi reader.
 
-`transform()`, silver, gold và test dbt vẫn không phải sửa: chúng chỉ đọc bảng bronze, không
-quan tâm bảng đó được ghi bằng cách nào.
-
-## Bronze được cài đặt HAI LẦN — và điều đó ràng buộc bạn
-
-Cùng 13 bảng, cùng rule, hai engine:
-
-| Môi trường | Ai ghi bronze | File |
-| --- | --- | --- |
-| lakehouse | Spark | `connectors/ingest_<bảng>.py` |
-| DuckDB | dbt | `../transforms/models/bronze/bronze_<bảng>.sql` |
-
-Đây là **lựa chọn có ý thức**: đổi lại được dev loop và CI chạy trong vài giây thay vì phải
-dựng MinIO+Spark+Trino. Cái giá là mỗi lần đổi rule chất lượng phải sửa **cả hai** — quên một
-bên thì hai môi trường cho hai kết quả khác nhau, im lặng, không lỗi nào báo.
-
-`tests/test_bronze_parity.py` bịt đúng chỗ đó: nó so tập nhãn `_invalid_reason` của từng cặp
-file và fail nếu lệch. Chạy `pytest tests -q` sau mỗi lần sửa rule.
-
-> Giới hạn: test so **tên nhãn**, không so logic bên trong. Một bên `< 0` còn bên kia `<= 0`
-> thì nó không thấy. Muốn chặt tới mức đó phải chạy cả hai engine trên cùng dữ liệu rồi đối
-> chiếu — tức là quay lại đúng chi phí mà trùng lặp này né.
-
 ## Thêm một bảng mới
 
 1. Thêm một mục vào `config/sources.yml`
-2. Tạo `connectors/ingest_<bảng>.py` theo mẫu trên
-3. Tạo `../transforms/models/bronze/bronze_<bảng>.sql` với **cùng tập nhãn lỗi**
-4. `pytest tests -q` — bắt ngay nếu ba bước trên lệch nhau
-5. `make lake-ingest-<bảng>`
+2. Tạo `../transforms/models/bronze/bronze_<bảng>.sql`
+3. `pytest tests -q` — bắt ngay nếu hai bước trên lệch nhau
+4. `make lake-ingest-<bảng>`
 
-Không phải sửa Makefile: danh sách target sinh ra từ `sources.yml`.
-Chi tiết đầy đủ tới tận gold: [`docs/them-bang-moi.md`](../docs/them-bang-moi.md).
+**Không phải viết Python**, và không phải sửa Makefile (danh sách target sinh từ
+`sources.yml`). Chi tiết tới tận gold: [`docs/them-bang-moi.md`](../docs/them-bang-moi.md).
 
 ## Vì sao chọn partition như vậy
 
-`sources.yml` ghi chiến lược partition của từng bảng cùng số dòng, để nhìn thấy toàn cảnh
-mà không phải mở 13 file. Nguyên tắc: **partition quá mịn còn hại hơn không partition** —
-650k dòng trải 2012-2023 mà partition theo ngày sẽ ra ~3800 file vài chục KB và làm writer OOM.
+`sources.yml` khai chiến lược partition của từng bảng cùng số dòng. Đây là **nguồn thật**,
+không còn là chú thích — chuỗi `months(order_date)` được phân tích thành hàm biến đổi
+Iceberg lúc ghi. Nguyên tắc: **partition quá mịn còn hại hơn không partition** — 650k dòng
+trải 2012-2023 mà partition theo ngày sẽ ra ~3800 file vài chục KB và làm writer OOM.

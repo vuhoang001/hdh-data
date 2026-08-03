@@ -1,6 +1,5 @@
 """Ghi/đọc bảng Iceberg trên MinIO qua REST catalog."""
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import functions as F
 
 DEFAULT_ICEBERG_FORMAT_VERSION = "2"
 
@@ -9,13 +8,9 @@ def create_namespace(spark: SparkSession, namespace: str) -> None:
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {namespace}")
 
 
-def add_audit_columns(df: DataFrame, source_file: str) -> DataFrame:
-    """Metadata kỹ thuật gắn cho mọi bảng bronze, không phụ thuộc nội dung bảng."""
-    return (
-        df
-        .withColumn("_source_file", F.lit(source_file))
-        .withColumn("_ingested_at", F.current_timestamp())
-    )
+# Cột audit (_source_file, _ingested_at) trước đây gắn ở đây bằng add_audit_columns().
+# Giờ chúng do chính model SQL sinh ra, cùng chỗ với phần logic còn lại, nên cả hai engine
+# tạo ra bộ cột giống hệt nhau mà không cần ai đồng bộ với ai.
 
 
 def write_iceberg_table(df: DataFrame, table_name: str, partition_columns=None) -> None:
