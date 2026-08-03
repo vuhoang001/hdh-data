@@ -6,72 +6,178 @@ models:
       Fact trung tâm của star schema. HẠT: một dòng = một dòng hàng trong một đơn (714.669 dòng).
       Khoá ngoại: date_key, customer_key, product_key, promo_key. Degenerate: order_id và các
       thuộc tính đơn. Số đo additive: quantity, gross_amount, discount_amount, net_amount.
-    # Test hạt (số dòng fact phải khớp silver) nằm ở tests/assert_fact_order_items_grain.sql
+
+    # =================================================================================
+    # TEST MỨC MODEL — luật liên quan tới NHIỀU CỘT hoặc tới TOÀN BẢNG.
+    # Test cột chỉ nhìn được một cột một lúc nên không diễn đạt được các luật dưới đây.
+    #
+    # Test HẠT (số dòng fact phải khớp silver) nằm ở tests/assert_fact_order_items_grain.sql
     # — viết tay vì dbt_utils.equal_rowcount sinh SQL không chạy được trên Trino.
+    # =================================================================================
+    data_tests:
+      # --- Luật số học giữa các số đo -------------------------------------------------
+      # net_amount không bao giờ được vượt gross_amount: chiết khấu chỉ làm tiền giảm đi.
+      # accepted_range trên từng cột riêng vẫn pass khi cả hai cùng dương nhưng sai quan hệ.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "net_amount <= gross_amount"
+
+      # Chiết khấu không được lớn hơn tiền hàng (bán xong lại phải trả tiền cho khách).
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "discount_amount <= gross_amount"
+
+      # Doanh thu thực dương — nhưng CHỈ xét đơn chưa huỷ.
+      # `where` của test config: thu hẹp phạm vi test thay vì phải viết singular test riêng.
+      # Không có nó thì hoặc phải bỏ luật, hoặc phải chấp nhận đơn huỷ làm test đỏ.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "net_amount > 0"
+          config:
+            where: "order_status <> 'cancelled'"
+
+      # --- Khoá tổ hợp: chỗ này ĐANG CÓ LỖI DỮ LIỆU THẬT ------------------------------
+      # Kỳ vọng: một sản phẩm chỉ xuất hiện 1 lần trong 1 đơn. Thực tế: 714.669 dòng nhưng
+      # chỉ 714.653 cặp (order_id, product_key) khác nhau -> 16 cặp bị lặp.
+      #
+      # Đây là ví dụ mẫu cho cách CẤU HÌNH NGƯỠNG thay vì tắt test đi:
+      #   warn_if  ">0"    -> có 1 dòng sai là báo vàng, không ai được phép quên
+      #   error_if ">100"  -> vượt 100 dòng thì coi là hỏng hệ thống, chặn pipeline
+      #   store_failures   -> ghi các dòng sai ra bảng để điều tra, thay vì phải mò lại SQL
+      #                       Bảng kết quả: analytics_dbt_test__audit.<tên test>
+      #
+      # Nói cách khác: test này CỐ TÌNH vàng. Xoá nó đi thì lỗi biến mất khỏi tầm nhìn,
+      # để nguyên severity error thì cả pipeline đứng vì 16 dòng trên 714 nghìn.
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, product_key]
+          config:
+            severity: error
+            error_if: ">100"
+            warn_if: ">0"
+            store_failures: true
+
+      # --- Chiều TIMELINESS (độ tươi của dữ liệu) ------------------------------------
+      # recency: bảng phải có dữ liệu trong vòng N ngày gần nhất.
+      # Bộ dữ liệu học này dừng ở 2022-12-31 nên test LUÔN VÀNG — giữ lại có chủ đích, làm
+      # khuôn mẫu cho pipeline thật (ở đó dừng cập nhật 2 ngày là sự cố nghiêm trọng).
+      # Đây là test duy nhất phát hiện được "job ingest chết âm thầm": mọi test khác vẫn
+      # xanh vì dữ liệu cũ vẫn hợp lệ, chỉ là không còn dữ liệu mới.
+      - dbt_utils.recency:
+          arguments:
+            datepart: day
+            field: date_key
+            interval: 2
+          config:
+            severity: warn
+
     columns:
       # --- Khoá ngoại: không cái nào được NULL, tất cả phải tồn tại trong dimension ---
       - name: date_key
         description: "-> dim_date.date_key"
-        tests:
+        data_tests:
           - not_null
           - relationships:
-              to: ref('dim_date')
-              field: date_key
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
       - name: customer_key
         description: "-> dim_customer.customer_id"
-        tests:
+        data_tests:
           - not_null
           - relationships:
-              to: ref('dim_customer')
-              field: customer_id
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+
       - name: product_key
         description: "-> dim_product.product_id"
-        tests:
+        data_tests:
           - not_null
           - relationships:
-              to: ref('dim_product')
-              field: product_id
+              arguments:
+                to: ref('dim_product')
+                field: product_id
+
       - name: promo_key
         description: "-> dim_promotion.promo_id. Không bao giờ NULL nhờ coalesce(promo_id, 'NO_PROMO')"
-        tests:
+        data_tests:
           - not_null
           - relationships:
-              to: ref('dim_promotion')
-              field: promo_id
+              arguments:
+                to: ref('dim_promotion')
+                field: promo_id
 
       # --- Degenerate dimension ---
       - name: order_id
         description: "Khoá nghiệp vụ. KHÔNG unique — một đơn có nhiều dòng hàng"
-        tests:
+        data_tests:
           - not_null
+
       - name: order_status
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["created", "paid", "shipped", "delivered", "returned", "cancelled"]
+              arguments:
+                values: ["created", "paid", "shipped", "delivered", "returned", "cancelled"]
+          # not_accepted_values là mặt trái của accepted_values: liệt kê các giá trị CẤM.
+          # Dùng khi danh sách hợp lệ còn mở (trạng thái mới có thể thêm sau) nhưng có vài
+          # giá trị chắc chắn là rác của ETL. accepted_values ở trên sẽ phải sửa mỗi lần
+          # nghiệp vụ thêm trạng thái; test này thì không bao giờ phải đụng tới.
+          - dbt_utils.not_accepted_values:
+              arguments:
+                values: ["unknown", "n/a", "null", "none", ""]
+
+      - name: promo_id_2_degenerate
+        description: "Khuyến mãi thứ 2. Chỉ 206/714.669 dòng (0,03%) có giá trị"
+        data_tests:
+          # at_least_one: cột phải có ÍT NHẤT 1 giá trị không NULL.
+          # Bắt lỗi "cột bị nối sai nên rỗng hoàn toàn" — not_null không dùng được ở đây
+          # (99,97% dòng NULL là đúng), accepted_range cũng không. Cột toàn NULL trông y
+          # hệt cột hoạt động bình thường với mọi test khác.
+          - dbt_utils.at_least_one
+
+          # not_null_proportion: tỉ lệ không-NULL phải nằm trong khoảng cho trước.
+          # at_least 0.0001 = ít nhất 1 phần vạn dòng phải có promo thứ 2 (thực tế 0.00029).
+          # at_most 0.05 = nếu vọt lên trên 5% thì logic gán promo đã đổi bản chất, và phân
+          # tích theo promo_key (chỉ tính promo thứ 1) không còn đại diện được nữa.
+          - dbt_utils.not_null_proportion:
+              arguments:
+                at_least: 0.0001
+                at_most: 0.05
+              config:
+                severity: warn
 
       # --- Số đo ---
       - name: quantity
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
+              arguments:
+                min_value: 0
+                inclusive: false
+
       - name: gross_amount
         description: "quantity * unit_price, trước giảm giá"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
+
       - name: net_amount
         description: "gross_amount - discount_amount. Đây là doanh thu thật"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
+
       - name: unit_price
         description: "Giá TẠI THỜI ĐIỂM GIAO DỊCH. NON-ADDITIVE — chỉ dùng với avg(), không sum()"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
+              arguments:
+                min_value: 0
+                inclusive: false

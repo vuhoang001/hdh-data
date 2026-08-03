@@ -32,3 +32,27 @@ models:
       +materialized: view
     gold:
       +materialized: table
+
+# =============================================================================
+# CẤU HÌNH TEST THEO TẦNG
+#
+# Cùng một test (not_null) mang ý nghĩa khác nhau tuỳ tầng nó đứng, nên severity phải
+# khác nhau — và đặt ở đây một chỗ thay vì lặp `config: severity:` trong từng file YAML.
+#
+#   bronze -> warn : bronze có nhiệm vụ PHẢN ÁNH TRUNG THỰC nguồn, kể cả khi nguồn bẩn.
+#                    Để error thì mỗi lần nguồn lỗi là cả pipeline đứng, và ta mất luôn
+#                    khả năng nhìn thấy chính dữ liệu bẩn đó để đi báo bên nguồn.
+#   silver -> error: silver đã lọc _is_valid, không còn lý do gì để bẩn nữa.
+#   gold   -> error: gold là thứ người dùng đọc. Thà không có báo cáo còn hơn báo cáo sai.
+#
+# store_failures: ghi các dòng fail ra bảng thay vì chỉ đếm trong log, để mở lên xem được
+# ngay đúng dòng nào sai. Bật cho gold vì đó là nơi điều tra tốn thời gian nhất; các tầng
+# dưới bật theo từng test khi cần (xem fact_order_items.yml).
+# Bảng kết quả nằm ở schema <schema>_dbt_test__audit.
+# =============================================================================
+data_tests:
+  hdh_dbt:
+    +severity: error
+    bronze:
+      +severity: warn
+

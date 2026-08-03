@@ -6,17 +6,59 @@ models:
     columns:
       - name: order_id
         description: "Khoá chính của đơn hàng"
-        tests:
+        data_tests:
           - not_null
           - unique
+
       - name: customer_id
-        tests:
+        data_tests:
           - not_null
+          # Toàn vẹn tham chiếu ngay từ SILVER, không đợi tới gold mới kiểm.
+          # Bắt lỗi sớm hơn một tầng: khách mồ côi xuất hiện ở đây nghĩa là lỗi nằm ở
+          # NGUỒN; còn nếu chỉ fact mới fail thì lỗi nằm ở phép JOIN của gold. Hai chẩn
+          # đoán khác hẳn nhau — chỉ khi có test ở cả hai tầng mới phân biệt được.
+          - relationships:
+              arguments:
+                to: ref('silver_customers')
+                field: customer_id
+
       - name: order_date
-        tests:
+        data_tests:
           - not_null
+          # GENERIC TEST TỰ VIẾT (tests/generic/not_future_date.sql).
+          # Ngày đặt hàng ở tương lai gần như luôn là lỗi parse dd/mm vs mm/dd ở nguồn.
+          - not_future_date
+
+      - name: zip
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_geography')
+                field: zip
+
       - name: order_status
         description: "Trạng thái đơn (đã chuẩn hoá về chữ thường)"
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["created", "paid", "shipped", "delivered", "returned", "cancelled"]
+              arguments:
+                values: ["created", "paid", "shipped", "delivered", "returned", "cancelled"]
+          # Trạng thái phải có nhiều hơn 1 giá trị. Nếu bước normalize ở bronze hỏng và ép
+          # mọi đơn về cùng một trạng thái, accepted_values VẪN PASS (giá trị đó vẫn nằm
+          # trong danh sách hợp lệ). not_constant là test duy nhất nổ.
+          - dbt_utils.not_constant
+
+      - name: payment_method
+        data_tests:
+          - not_null
+          - dbt_utils.not_accepted_values:
+              arguments:
+                values: ["unknown", "n/a", ""]
+
+      - name: device_type
+        data_tests:
+          - not_null
+
+      - name: order_source
+        data_tests:
+          - not_null

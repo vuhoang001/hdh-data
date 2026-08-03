@@ -3,30 +3,81 @@ version: 2
 models:
   - name: gold_revenue_daily
     description: "Doanh thu theo ngày (gold layer), tính từ dòng hàng join với đơn"
+
+    # =================================================================================
+    # Model tổng hợp có một loại lỗi riêng mà bảng chi tiết không có: MẤT DÒNG khi group by
+    # hoặc join. Mọi test cột đều pass trên một bảng đã mất 3% doanh thu — số còn lại vẫn
+    # not_null, vẫn dương, vẫn unique theo ngày. Vì vậy model này cần test ĐỐI CHIẾU.
+    # =================================================================================
+    data_tests:
+      # Số dòng hàng luôn >= số đơn (mỗi đơn ít nhất 1 dòng hàng).
+      # Nếu quan hệ này đảo chiều thì count(distinct) đã đếm sai ở đâu đó.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "num_lines >= num_orders"
+
+      # avg_order_value phải đúng bằng revenue / num_orders — kiểm tra cột dẫn xuất không
+      # bị lệch khỏi hai cột sinh ra nó. Dùng ngưỡng vì đây là phép chia trên double.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(avg_order_value - revenue / num_orders) < 0.01"
+
     columns:
       - name: order_date
-        tests:
+        data_tests:
           - not_null
           - unique
+          # GENERIC TEST TỰ VIẾT (tests/generic/not_future_date.sql):
+          # bảng doanh thu ngày không được có ngày ở tương lai.
+          - not_future_date
+
       - name: num_orders
         description: "Số đơn có ít nhất 1 dòng hàng trong ngày"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
-      - name: num_units
-        tests:
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: num_lines
+        description: "Số dòng hàng trong ngày"
+        data_tests:
+          - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: num_units
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+
       - name: revenue
         description: "Tổng thành tiền sau chiết khấu"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
+          # GENERIC TEST TỰ VIẾT (tests/generic/sum_equals.sql) — chiều ACCURACY.
+          # Tổng doanh thu của bảng ngày phải bằng tổng net_amount của fact chi tiết.
+          # Đây là test duy nhất bắt được lỗi "group by làm rơi mất một phần dữ liệu".
+          #
+          # Test singular assert_revenue_daily_matches_fact.sql kiểm cùng luật nhưng
+          # THEO TỪNG NGÀY. Giữ cả hai: test tổng ở đây rẻ và chạy nhanh, test theo ngày
+          # bắt thêm được lỗi lệch ngày mà tổng không phát hiện được vì bù trừ nhau.
+          - sum_equals:
+              arguments:
+                compare_model: ref('fact_order_items')
+                compare_column: net_amount
+                tolerance: 0.01
+
       - name: total_discount
-        tests:
+        data_tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0

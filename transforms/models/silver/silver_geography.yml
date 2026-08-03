@@ -6,13 +6,24 @@ models:
     columns:
       - name: zip
         description: "Khoá chính — mỗi zip đúng 1 dòng"
-        tests:
+        data_tests:
           - not_null
           - unique
+
       - name: city
-        tests:
+        data_tests:
           - not_null
+          - dbt_utils.not_constant
+
       - name: region
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["central", "east", "west"]
+              arguments:
+                values: ["central", "east", "west"]
+          # Cả 3 vùng phải cùng tồn tại. accepted_values vẫn pass nếu 100% zip rơi vào
+          # 'east' do lỗi map vùng — không_constant thì không.
+          - dbt_utils.not_constant
+
+      - name: district
+        data_tests:
+          - not_null

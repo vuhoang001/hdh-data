@@ -6,27 +6,38 @@ models:
     columns:
       - name: customer_id
         description: "Khoá chính"
-        tests:
+        data_tests:
           - not_null
           - unique
+
       - name: zip
-        tests:
+        data_tests:
           - not_null
           - relationships:
-              to: ref('silver_geography')
-              field: zip
+              arguments:
+                to: ref('silver_geography')
+                field: zip
+
       - name: gender
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["female", "male", "non-binary"]
+              arguments:
+                values: ["female", "male", "non-binary"]
+
       - name: age_group
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["18-24", "25-34", "35-44", "45-54", "55+"]
+              arguments:
+                values: ["18-24", "25-34", "35-44", "45-54", "55+"]
+
       - name: acquisition_channel
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["direct", "email_campaign", "organic_search", "paid_search", "referral", "social_media"]
+              arguments:
+                values: ["direct", "email_campaign", "organic_search", "paid_search", "referral", "social_media"]
+
       - name: signup_date
-        tests:
+        data_tests:
           - not_null
+          # GENERIC TEST TỰ VIẾT (tests/generic/not_future_date.sql)
+          - not_future_date

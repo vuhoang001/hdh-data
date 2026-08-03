@@ -6,26 +6,57 @@ models:
     columns:
       - name: customer_id
         description: "Khoá tự nhiên. Mỗi khách đúng 1 dòng"
-        tests:
+        data_tests:
           - not_null
           - unique
+          # cardinality_equality: TẬP GIÁ TRỊ của customer_id ở đây phải TRÙNG KHỚP HOÀN
+          # TOÀN với silver_customers — cả danh sách khách lẫn số dòng mỗi khách.
+          #
+          # Khác relationships ở chỗ nào: relationships chỉ kiểm một chiều (mọi khách ở
+          # dim đều có ở silver). Nó vẫn PASS khi dim làm MẤT 10.000 khách — subset vẫn là
+          # subset. Ở dimension thì mất khách chính là lỗi cần bắt: dim_customer join qua
+          # left join với geography, một ngày nào đó ai đó sửa thành inner join là 122k
+          # khách âm thầm rơi xuống còn 118k, và mọi báo cáo "số khách hàng" sai từ đó.
+          - dbt_utils.cardinality_equality:
+              arguments:
+                to: ref('silver_customers')
+                field: customer_id
+
+      - name: signup_date
+        description: "Ngày đăng ký. Không bao giờ được ở tương lai"
+        data_tests:
+          - not_null
+          # GENERIC TEST TỰ VIẾT (tests/generic/not_future_date.sql)
+          - not_future_date
+
       - name: region
         description: "Từ geography qua zip. NULL nghĩa là zip không tra được"
-        tests:
+        data_tests:
           - not_null
           - accepted_values:
-              values: ["central", "east", "west"]
+              arguments:
+                values: ["central", "east", "west"]
+
       - name: city
-        tests:
+        data_tests:
           - not_null
+
       - name: gender
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["female", "male", "non-binary"]
+              arguments:
+                values: ["female", "male", "non-binary"]
+
       - name: acquisition_channel
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["direct", "email_campaign", "organic_search", "paid_search", "referral", "social_media"]
+              arguments:
+                values: ["direct", "email_campaign", "organic_search", "paid_search", "referral", "social_media"]
+
       - name: signup_year
-        tests:
+        data_tests:
           - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 2012
+                max_value: 2022

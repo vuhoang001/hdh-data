@@ -5,20 +5,46 @@ models:
     description: >
       Dimension khuyến mãi: 50 chương trình thật + 1 thành viên nhân tạo 'NO_PROMO'.
       Thành viên nhân tạo để fact không có khoá ngoại NULL, nhờ đó mọi join đều là inner join.
+
+    data_tests:
+      # Ngày kết thúc >= ngày bắt đầu. `where` loại thành viên nhân tạo ra khỏi phạm vi
+      # test: NO_PROMO cố tình có start_date/end_date NULL nên không có luật nào áp lên nó.
+      # Đây là ca dùng `where` điển hình nhất — một luật đúng với dữ liệu thật nhưng không
+      # áp được cho dòng kỹ thuật do chính ta thêm vào.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "end_date >= start_date"
+          config:
+            where: "promo_id <> 'NO_PROMO'"
+
     columns:
       - name: promo_id
         description: "Khoá tự nhiên. 'NO_PROMO' là thành viên nhân tạo, không có trong nguồn"
-        tests:
+        data_tests:
           - not_null
           - unique
+          # Sự tồn tại BẮT BUỘC của dòng 'NO_PROMO' được kiểm ở
+          # tests/assert_no_promo_member_exists.sql — không generic test nào làm được việc
+          # đó, vì generic test duyệt trên các dòng ĐANG CÓ chứ không kiểm dòng ĐANG THIẾU.
+
       - name: promo_name
-        tests:
+        data_tests:
           - not_null
+
       - name: promo_type
         description: "'none' chỉ dành cho thành viên NO_PROMO"
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["fixed", "percentage", "none"]
+              arguments:
+                values: ["fixed", "percentage", "none"]
+
+      - name: discount_value
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
       - name: is_stackable
-        tests:
+        data_tests:
           - not_null

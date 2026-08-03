@@ -3,34 +3,127 @@ version: 2
 models:
   - name: dim_date
     description: "Dimension ngày, tự sinh từ date_spine (2012-01-01 → 2022-12-31). Không đến từ dữ liệu nguồn"
+
+    # ===================================================================================
+    # TẦNG 2 — CONTRACT (dbt 1.5+). Khác test ở chỗ: contract chặn TRƯỚC khi bảng được tạo.
+    #
+    # Test chạy SAU khi bảng đã ghi xong: bảng sai vẫn nằm đó cho báo cáo đọc, chỉ là có
+    # thêm dòng đỏ trong log. Contract thì dbt so schema đã khai báo với schema model sắp
+    # sinh ra, lệch một kiểu dữ liệu là build FAIL và bảng cũ giữ nguyên.
+    #
+    # Đặt contract ở dim_date vì đây là model có hợp đồng rõ ràng nhất: nó không phụ thuộc
+    # dữ liệu nguồn, mọi cột do macro sinh ra, và mọi model/report khác join vào nó. Ngày
+    # ai đó đổi macro dow() làm day_of_week từ bigint thành varchar, build phải dừng ngay.
+    #
+    # Cái giá: contract bắt buộc khai báo data_type cho MỌI cột, không được thiếu cột nào.
+    # Kiểu ở đây chọn loại chung của cả DuckDB và Trino (bigint/varchar/date/boolean).
+    # ===================================================================================
+    config:
+      contract:
+        enforced: true
+
     columns:
       - name: date_key
+        data_type: date
         description: "Khoá chính — mỗi ngày đúng 1 dòng, không thiếu ngày nào"
-        tests:
+        data_tests:
           - not_null
           - unique
+          # Không được THỦNG NGÀY: mỗi dòng phải cách dòng trước đúng 1 ngày.
+          # unique + not_null vẫn pass trên một chuỗi ngày rời rạc — chỉ test này bắt được.
+          # (Test singular assert_dim_date_no_missing_days kiểm cùng luật bằng cách đếm số
+          #  dòng so với độ dài khoảng; giữ cả hai vì chúng fail theo hai kiểu khác nhau —
+          #  cái này chỉ ra ĐÚNG chỗ thủng, cái kia chỉ nói có thủng.)
+          - dbt_utils.sequential_values:
+              arguments:
+                interval: 1
+                datepart: day
+
       - name: year
-        tests:
+        data_type: bigint
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 2012
-              max_value: 2022
+              arguments:
+                min_value: 2012
+                max_value: 2022
+
       - name: quarter
-        tests:
+        data_type: bigint
+        data_tests:
           - dbt_utils.accepted_range:
-              min_value: 1
-              max_value: 4
+              arguments:
+                min_value: 1
+                max_value: 4
+
       - name: month
-        tests:
+        data_type: bigint
+        data_tests:
           - dbt_utils.accepted_range:
-              min_value: 1
-              max_value: 12
-      - name: day_of_week
-        description: "Trino: 1=thứ 2 ... 7=chủ nhật"
-        tests:
-          - dbt_utils.accepted_range:
-              min_value: 1
-              max_value: 7
-      - name: is_weekend
-        tests:
+              arguments:
+                min_value: 1
+                max_value: 12
+
+      - name: month_name
+        data_type: varchar
+        description: "Tên tháng tiếng Anh đầy đủ. Test này khoá luôn khác biệt hàm giữa DuckDB và Trino"
+        data_tests:
           - not_null
+          # 12 giá trị hợp lệ, không hơn không kém. Đây là cách rẻ nhất để phát hiện macro
+          # month_name() sinh sai định dạng ở một engine (vd trả '01' thay vì 'January'
+          # nếu ai đó gõ nhầm %M thành %m trong date_format của Trino).
+          - accepted_values:
+              arguments:
+                values:
+                  ["January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+
+      - name: day_of_month
+        data_type: bigint
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 31
+
+      - name: day_of_week
+        data_type: bigint
+        description: "Trino: 1=thứ 2 ... 7=chủ nhật"
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 7
+
+      - name: day_name
+        data_type: varchar
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+      - name: is_weekend
+        data_type: boolean
+        data_tests:
+          - not_null
+          # not_constant: cột phải có ÍT NHẤT 2 giá trị khác nhau.
+          # Bắt đúng lỗi kinh điển: macro dow() lệch base (0-6 vs 1-7) làm điều kiện `>= 6`
+          # trả true cho MỌI ngày — hoặc false cho mọi ngày. Cột vẫn not_null, vẫn boolean
+          # hợp lệ, contract vẫn pass. Chỉ not_constant nổ.
+          - dbt_utils.not_constant
+
+      - name: week_of_year
+        data_type: bigint
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 53
+
+      - name: year_month
+        data_type: varchar
+        description: "'YYYY-MM'. Dùng để group theo tháng mà không cần hàm ngày trong query"
+        data_tests:
+          - not_null
+          - dbt_utils.not_constant

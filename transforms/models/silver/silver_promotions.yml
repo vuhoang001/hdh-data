@@ -3,32 +3,72 @@ version: 2
 models:
   - name: silver_promotions
     description: "Khuyến mãi đã làm sạch (silver layer)"
+
+    data_tests:
+      # Ngày kết thúc không được trước ngày bắt đầu.
+      # duration_days đã có accepted_range >= 0 ở dưới, nhưng đó là kiểm cột DẪN XUẤT.
+      # Test này kiểm thẳng hai cột GỐC — nếu công thức tính duration_days sai thì chỉ
+      # test này nổ, còn accepted_range trên duration_days vẫn xanh.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "end_date >= start_date"
+
+      # Khuyến mãi phần trăm không được quá 100%.
+      # `where` thu hẹp test về đúng nhóm dòng mà luật này áp dụng — với promo_type
+      # 'fixed' thì discount_value là số tiền, 100 là hoàn toàn hợp lệ.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "discount_value <= 100"
+          config:
+            where: "promo_type = 'percentage'"
+
     columns:
       - name: promo_id
         description: "Khoá chính"
-        tests:
+        data_tests:
           - not_null
           - unique
+
+      - name: promo_name
+        data_tests:
+          - not_null
+
       - name: promo_type
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["fixed", "percentage"]
+              arguments:
+                values: ["fixed", "percentage"]
+
       - name: promo_channel
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["all_channels", "email", "in_store", "online", "social_media"]
+              arguments:
+                values: ["all_channels", "email", "in_store", "online", "social_media"]
+
       - name: discount_value
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: start_date
+        data_tests:
+          - not_null
+
+      - name: end_date
+        data_tests:
+          - not_null
+
       - name: duration_days
         description: "Số ngày chạy. Âm nghĩa là end_date trước start_date"
-        tests:
+        data_tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
+
       - name: is_stackable
         description: "True = cho phép cộng thêm 1 khuyến mãi nữa lên trên"
-        tests:
+        data_tests:
           - not_null

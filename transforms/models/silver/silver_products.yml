@@ -3,36 +3,59 @@ version: 2
 models:
   - name: silver_products
     description: "Sản phẩm đã làm sạch (silver layer). price là giá niêm yết hiện tại, KHÔNG phải giá đã bán"
+
+    data_tests:
+      # Giá niêm yết không được thấp hơn giá vốn. Luật hai cột — accepted_range trên price
+      # và trên cogs riêng lẻ vẫn pass khi cả hai đều dương nhưng ngược quan hệ.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "price >= cogs"
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(list_margin - (price - cogs)) < 0.01"
+
     columns:
       - name: product_id
         description: "Khoá chính"
-        tests:
+        data_tests:
           - not_null
           - unique
+
       - name: product_name
-        tests:
+        data_tests:
           - not_null
+
       - name: category
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["casual", "genz", "outdoor", "streetwear"]
+              arguments:
+                values: ["casual", "genz", "outdoor", "streetwear"]
+
       - name: size
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["s", "m", "l", "xl"]
+              arguments:
+                values: ["s", "m", "l", "xl"]
+
       - name: price
         description: "Giá niêm yết hiện tại — dùng order_items.unit_price để tính doanh thu"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
+              arguments:
+                min_value: 0
+                inclusive: false
+
       - name: cogs
-        tests:
+        data_tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
+
       - name: list_margin
         description: "price - cogs. Âm nghĩa là giá vốn cao hơn giá niêm yết"
-        tests:
+        data_tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0

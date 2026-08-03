@@ -38,8 +38,10 @@ INGEST_TARGETS = $(addprefix lake-ingest-,$(BRONZE_TABLES))
 # Các target này không trùng tên file nào nên vẫn luôn được chạy lại.
 .PHONY: help env-check \
         duckdb-up duckdb-deps duckdb-run duckdb-test duckdb-query duckdb-shell \
+        duckdb-test-unit duckdb-test-data duckdb-test-store duckdb-test-failures \
         duckdb-down duckdb-clean duckdb-ps \
         lake-up lake-down lake-clean lake-ps lake-logs lake-dbt-deps lake-dbt lake-dbt-test \
+        lake-freshness \
         lake-trino lake-spark-sql lake-query lake-ingest \
         ci-local
 
@@ -69,6 +71,26 @@ duckdb-run:    ## [duckdb] Build cả pipeline: bronze -> silver -> gold + test
 
 duckdb-test:   ## [duckdb] Chỉ chạy test dữ liệu
 	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb
+
+# Unit test kiểm CÔNG THỨC SQL bằng dữ liệu bịa (models/gold/_unit_tests.yml), không đụng
+# tới dữ liệu thật. Chạy trong 2 giây nên dùng được ngay trong lúc sửa model, thay vì phải
+# build lại 714k dòng mới biết công thức đúng hay sai.
+duckdb-test-unit:  ## [duckdb] Chỉ chạy unit test (nhanh, không cần dữ liệu)
+	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb --select "test_type:unit"
+
+# Chỉ chạy các data test (loại trừ unit test) — dùng khi muốn kiểm dữ liệu thật.
+duckdb-test-data:  ## [duckdb] Chỉ chạy data test trên dữ liệu thật
+	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb --exclude "test_type:unit"
+
+# --store-failures ghi CÁC DÒNG SAI của mọi test ra bảng thay vì chỉ đếm trong log.
+# Dùng khi đang điều tra: chạy xong thì mở bảng lên xem đúng dòng nào hỏng, không phải
+# đi tìm lại câu SQL của test trong target/compiled/.
+duckdb-test-store: ## [duckdb] Chạy test + ghi các dòng fail ra bảng để điều tra
+	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb --store-failures
+
+duckdb-test-failures: ## [duckdb] Liệt kê các bảng chứa dòng fail đã lưu
+	$(COMPOSE_DUCKDB) exec dbt python -c \
+	  "import duckdb; duckdb.connect('$(DUCKDB_PATH)').sql(\"select table_name, estimated_size as rows from duckdb_tables() where schema_name like '%dbt_test__audit'\").show()"
 
 duckdb-query:  ## [duckdb] Xem thử 1 bảng gold
 	$(COMPOSE_DUCKDB) exec dbt dbt show --target duckdb --limit 20 \
@@ -127,6 +149,14 @@ lake-dbt:      ## [lakehouse] Build model dbt silver + gold (--target trino)
 
 lake-dbt-test: ## [lakehouse] Chỉ chạy test dữ liệu
 	$(COMPOSE_LAKE) exec dbt dbt test --target trino
+
+# source freshness KHÔNG nằm trong `dbt test` — nó là lệnh riêng, và chỉ chạy được ở đây
+# vì ở môi trường DuckDB không có source nào (bronze là model chứ không phải source).
+# Nó đọc max(_ingested_at) của từng bảng bronze và so với ngưỡng ở models/silver/_sources.yml.
+# Đây là thứ duy nhất phát hiện được "job Spark chết âm thầm": dữ liệu cũ vẫn hợp lệ nên
+# mọi test khác vẫn xanh, chỉ là không còn dữ liệu mới chảy vào.
+lake-freshness: ## [lakehouse] Kiểm độ tươi của các bảng bronze (source freshness)
+	$(COMPOSE_LAKE) exec dbt dbt source freshness --target trino
 
 # ----- Bước 3: Truy vấn bằng Trino -----
 lake-trino:    ## [lakehouse] Mở Trino CLI

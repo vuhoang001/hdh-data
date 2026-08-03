@@ -5,32 +5,65 @@ models:
     description: >
       Dimension sản phẩm. Cột giá mang tiền tố current_ vì chúng là giá niêm yết HIỆN TẠI,
       không phải giá đã bán — dùng fact_order_items.unit_price để tính doanh thu.
+
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "current_list_price >= current_unit_cost"
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(current_list_margin - (current_list_price - current_unit_cost)) < 0.01"
+
     columns:
       - name: product_id
         description: "Khoá tự nhiên. Mỗi sản phẩm đúng 1 dòng"
-        tests:
+        data_tests:
           - not_null
           - unique
+          # Dimension không được LÀM MẤT sản phẩm nào so với silver.
+          # relationships chỉ kiểm một chiều nên vẫn pass khi dim thiếu sản phẩm;
+          # cardinality_equality so cả hai chiều nên bắt được.
+          - dbt_utils.cardinality_equality:
+              arguments:
+                to: ref('silver_products')
+                field: product_id
+
       - name: product_name
-        tests:
+        data_tests:
           - not_null
+
       - name: category
-        tests:
+        data_tests:
           - not_null
           - accepted_values:
-              values: ["casual", "genz", "outdoor", "streetwear"]
+              arguments:
+                values: ["casual", "genz", "outdoor", "streetwear"]
+
       - name: size
-        tests:
+        data_tests:
           - accepted_values:
-              values: ["s", "m", "l", "xl"]
+              arguments:
+                values: ["s", "m", "l", "xl"]
+
       - name: current_list_price
         description: "Giá niêm yết hiện tại. KHÔNG dùng tính doanh thu — chỉ 0,01% khớp giá bán thật"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
-      - name: current_list_margin
-        tests:
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: current_unit_cost
+        data_tests:
+          - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
+
+      - name: current_list_margin
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0

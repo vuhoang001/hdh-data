@@ -3,23 +3,89 @@ version: 2
 models:
   - name: silver_order_items
     description: "Dòng hàng đã làm sạch (silver layer)"
+
+    data_tests:
+      # line_amount phải khớp công thức sinh ra nó. Luật NHIỀU CỘT nên không đặt được ở
+      # mức cột — accepted_range trên từng cột riêng vẫn pass khi công thức bị sửa sai.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(line_amount - (quantity * unit_price - discount_amount)) < 0.01"
+
+      # Chiết khấu không được vượt tiền hàng.
+      # `limit` của test config: khi test này fail trên dữ liệu thật nó có thể trả về hàng
+      # trăm nghìn dòng, làm nghẽn cả log lẫn bảng store_failures. 500 dòng là quá đủ để
+      # chẩn đoán — không ai đọc tới dòng thứ 501, mà fail thì vẫn là fail.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "discount_amount <= quantity * unit_price"
+          config:
+            limit: 500
+
     columns:
       - name: order_id
         description: "Không unique — một đơn có nhiều dòng hàng"
-        tests:
+        data_tests:
           - not_null
           - relationships:
-              to: ref('silver_orders')
-              field: order_id
+              arguments:
+                to: ref('silver_orders')
+                field: order_id
+
       - name: product_id
-        tests:
+        data_tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_products')
+                field: product_id
+
+      - name: promo_id
+        description: "NULL = không áp dụng khuyến mãi (61% số dòng)"
+        data_tests:
+          # relationships CHỈ kiểm các giá trị khác NULL, nên đặt được thẳng lên cột 61%
+          # NULL mà không cần thêm điều kiện where nào.
+          - relationships:
+              arguments:
+                to: ref('silver_promotions')
+                field: promo_id
+
+      - name: promo_id_2
+        description: "Khuyến mãi thứ 2, chỉ 206/714.669 dòng có"
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('silver_promotions')
+                field: promo_id
+          # Cột gần như rỗng — at_least_one là test duy nhất phân biệt được
+          # "hiếm nhưng có thật" với "bị nối sai nên rỗng hoàn toàn".
+          - dbt_utils.at_least_one
+
       - name: quantity
-        tests:
+        data_tests:
+          - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: unit_price
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: discount_amount
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
       - name: line_amount
-        tests:
+        data_tests:
+          - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0

@@ -1,0 +1,104 @@
+version: 2
+
+# =====================================================================================
+# TẦNG 3 — UNIT TEST (dbt 1.8+). Khác hoàn toàn với data test ở TRÊN cái gì được kiểm.
+#
+#   data test  : "DỮ LIỆU trong bảng có đúng không?"  -> chạy trên 714.669 dòng thật
+#   unit test  : "CÔNG THỨC SQL có đúng không?"        -> chạy trên 3 dòng bịa ra
+#
+# Vì sao cần cả hai: data test chỉ phát hiện được lỗi mà DỮ LIỆU HÔM NAY chạm tới. Nhánh
+# coalesce(promo_id, 'NO_PROMO') hôm nay đúng vì tình cờ dữ liệu có cả hai trường hợp;
+# ngày mai nguồn không còn dòng promo_id NULL nào thì nhánh đó không được kiểm nữa mà
+# không ai biết. Unit test thì tự dựng ra đúng trường hợp cần kiểm, mọi lúc.
+#
+# Unit test còn chạy được TRƯỚC KHI có dữ liệu: sửa công thức lúc 2h sáng, chạy
+# `dbt test --select fact_order_items` trong 2 giây thay vì build lại 714k dòng.
+#
+# Chạy: dbt test --target duckdb --select "test_type:unit"
+# =====================================================================================
+unit_tests:
+  # -----------------------------------------------------------------------------------
+  # 1. Công thức số đo + xử lý khoá ngoại NULL của fact
+  # -----------------------------------------------------------------------------------
+  - name: test_fact_order_items_measures_and_promo_key
+    model: fact_order_items
+    description: >
+      Kiểm 3 luật một lúc: gross_amount = quantity * unit_price, net_amount lấy từ
+      line_amount của silver, và promo_id NULL phải thành 'NO_PROMO' chứ không được để NULL.
+    given:
+      - input: ref('silver_order_items')
+        rows:
+          # Dòng CÓ khuyến mãi: 2 x 50 = 100 gross, giảm 20 -> 80 net
+          - {order_id: 1, product_id: 10, quantity: 2, unit_price: 50.0, discount_amount: 20.0, line_amount: 80.0, promo_id: "SUMMER10", promo_id_2: null}
+          # Dòng KHÔNG khuyến mãi — đây là ca quan trọng nhất: promo_id NULL.
+          # 61% dữ liệu thật rơi vào ca này, và nếu coalesce bị xoá thì fact có khoá ngoại
+          # NULL, join sang dim_promotion vứt mất 61% doanh thu.
+          - {order_id: 2, product_id: 11, quantity: 1, unit_price: 30.0, discount_amount: 0.0, line_amount: 30.0, promo_id: null, promo_id_2: null}
+          # Dòng có promo thứ 2 (0,03% dữ liệu thật) — phải giữ nguyên ở cột degenerate
+          - {order_id: 2, product_id: 12, quantity: 3, unit_price: 10.0, discount_amount: 5.0, line_amount: 25.0, promo_id: "SUMMER10", promo_id_2: "FREESHIP"}
+
+      - input: ref('silver_orders')
+        rows:
+          - {order_id: 1, order_date: "2022-01-01", customer_id: 100, zip: "10000", order_status: "delivered", payment_method: "card", device_type: "mobile", order_source: "app"}
+          - {order_id: 2, order_date: "2022-01-02", customer_id: 101, zip: "10001", order_status: "paid", payment_method: "cash", device_type: "desktop", order_source: "web"}
+
+    expect:
+      # Chỉ liệt kê những cột CẦN KIỂM — dbt bỏ qua các cột không nhắc tới.
+      rows:
+        - {order_id: 1, product_key: 10, promo_key: "SUMMER10", quantity: 2, gross_amount: 100.0, discount_amount: 20.0, net_amount: 80.0, promo_id_2_degenerate: null}
+        - {order_id: 2, product_key: 11, promo_key: "NO_PROMO", quantity: 1, gross_amount: 30.0, discount_amount: 0.0, net_amount: 30.0, promo_id_2_degenerate: null}
+        - {order_id: 2, product_key: 12, promo_key: "SUMMER10", quantity: 3, gross_amount: 30.0, discount_amount: 5.0, net_amount: 25.0, promo_id_2_degenerate: "FREESHIP"}
+
+  # -----------------------------------------------------------------------------------
+  # 2. Fact KHÔNG được nhân dòng khi join với orders
+  # -----------------------------------------------------------------------------------
+  - name: test_fact_order_items_grain_not_fanned_out
+    model: fact_order_items
+    description: >
+      Một đơn có 3 dòng hàng phải cho ra đúng 3 dòng fact, không phải 6. Đây là phiên bản
+      unit test của luật mà tests/assert_fact_order_items_grain.sql kiểm trên dữ liệu thật —
+      nhưng ở đây nó nổ ngay lúc sửa code, không cần chờ build xong 714k dòng.
+    given:
+      - input: ref('silver_order_items')
+        rows:
+          - {order_id: 7, product_id: 1, quantity: 1, unit_price: 10.0, discount_amount: 0.0, line_amount: 10.0, promo_id: null, promo_id_2: null}
+          - {order_id: 7, product_id: 2, quantity: 1, unit_price: 20.0, discount_amount: 0.0, line_amount: 20.0, promo_id: null, promo_id_2: null}
+          - {order_id: 7, product_id: 3, quantity: 1, unit_price: 30.0, discount_amount: 0.0, line_amount: 30.0, promo_id: null, promo_id_2: null}
+      - input: ref('silver_orders')
+        rows:
+          - {order_id: 7, order_date: "2022-03-01", customer_id: 500, zip: "10000", order_status: "paid", payment_method: "card", device_type: "mobile", order_source: "app"}
+    expect:
+      rows:
+        - {order_id: 7, product_key: 1, net_amount: 10.0}
+        - {order_id: 7, product_key: 2, net_amount: 20.0}
+        - {order_id: 7, product_key: 3, net_amount: 30.0}
+
+  # -----------------------------------------------------------------------------------
+  # 3. Logic gộp nhóm của bảng tổng hợp theo ngày
+  # -----------------------------------------------------------------------------------
+  - name: test_gold_revenue_daily_aggregation
+    model: gold_revenue_daily
+    description: >
+      Ca then chốt: 1 đơn có 2 dòng hàng. num_orders phải là 1 (count distinct) nhưng
+      num_lines phải là 2 (count *). Nhầm hai cái này với nhau là lỗi kinh điển của bảng
+      tổng hợp — và dữ liệu thật KHÔNG bắt được vì cả hai con số đều "trông hợp lý".
+    given:
+      - input: ref('silver_order_items')
+        rows:
+          # Đơn 1 — hai dòng hàng, cùng ngày
+          - {order_id: 1, product_id: 10, quantity: 2, unit_price: 50.0, discount_amount: 20.0, line_amount: 80.0, promo_id: null, promo_id_2: null}
+          - {order_id: 1, product_id: 11, quantity: 1, unit_price: 30.0, discount_amount: 0.0,  line_amount: 30.0, promo_id: null, promo_id_2: null}
+          # Đơn 2 — một dòng, cùng ngày với đơn 1
+          - {order_id: 2, product_id: 12, quantity: 5, unit_price: 10.0, discount_amount: 10.0, line_amount: 40.0, promo_id: null, promo_id_2: null}
+          # Đơn 3 — ngày khác, để chắc chắn group by tách nhóm đúng
+          - {order_id: 3, product_id: 13, quantity: 1, unit_price: 100.0, discount_amount: 0.0, line_amount: 100.0, promo_id: null, promo_id_2: null}
+      - input: ref('silver_orders')
+        rows:
+          - {order_id: 1, order_date: "2022-01-01", customer_id: 100, zip: "1", order_status: "paid", payment_method: "card", device_type: "mobile", order_source: "app"}
+          - {order_id: 2, order_date: "2022-01-01", customer_id: 101, zip: "1", order_status: "paid", payment_method: "card", device_type: "mobile", order_source: "app"}
+          - {order_id: 3, order_date: "2022-01-02", customer_id: 102, zip: "1", order_status: "paid", payment_method: "card", device_type: "mobile", order_source: "app"}
+    expect:
+      rows:
+        # 2 đơn, 3 dòng hàng, 8 sản phẩm, doanh thu 80+30+40 = 150, giảm giá 20+0+10 = 30
+        - {order_date: "2022-01-01", num_orders: 2, num_lines: 3, num_units: 8, revenue: 150.0, total_discount: 30.0, avg_order_value: 75.0}
+        - {order_date: "2022-01-02", num_orders: 1, num_lines: 1, num_units: 1, revenue: 100.0, total_discount: 0.0, avg_order_value: 100.0}

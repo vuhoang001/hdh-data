@@ -3,15 +3,47 @@ version: 2
 models:
   - name: gold_orders_daily
     description: "Số đơn theo ngày (gold layer)"
+
+    data_tests:
+      # Tổng các trạng thái con không được vượt tổng số đơn.
+      # Lỗi thật mà nó bắt: đổi `count(*) filter (...)` thành `count(...)` hoặc quên
+      # distinct làm các bộ đếm phình lên — mọi cột vẫn dương, vẫn not_null, chỉ là
+      # cộng lại thì lớn hơn tổng.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "num_delivered + num_cancelled + num_returned <= num_orders"
+
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "num_customers <= num_orders"
+
     columns:
       - name: order_date
-        tests:
+        data_tests:
           - not_null
           - unique
+          - not_future_date
+          # Mọi ngày có đơn đều phải tồn tại trong dim_date. Nếu khoảng của date_spine bị
+          # thu hẹp mà dữ liệu vẫn chạy tới ngày cũ, test này nổ ngay ở gold thay vì để
+          # báo cáo âm thầm rơi mất vài ngày khi join.
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
       - name: num_orders
         description: "Số đơn trong ngày, phải > 0"
-        tests:
+        data_tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: false
+              arguments:
+                min_value: 0
+                inclusive: false
+
+      - name: num_customers
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
