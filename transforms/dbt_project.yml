@@ -14,7 +14,9 @@ vars:
   # Thư mục chứa CSV nguồn, nhìn từ bên trong container. Giá trị đến từ .env (DBT_DATA_DIR).
   # Chỉ dùng ở target duckdb (bronze đọc CSV trực tiếp). Ở target trino, bronze do Spark ghi
   # Iceberg nên var này không được dùng.
-  data_dir: "{{ env_var('DBT_DATA_DIR', '/data') }}"
+  # Fallback ../data là đường dẫn trên host (dbt chạy với cwd = transforms/), chỉ dùng khi
+  # chạy dbt ngoài container vì /data không tồn tại trên host.
+  data_dir: "{{ env_var('DBT_DATA_DIR', '../data') }}"
 
 models:
   hdh_dbt:

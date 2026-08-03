@@ -9,9 +9,11 @@ hdh_dbt:
     # ---- Môi trường 1: DuckDB (nhẹ) — bronze+silver+gold chạy trọn trong 1 file .duckdb ----
     duckdb:
       type: duckdb
-      # File warehouse nằm trên named volume nên giữ lại giữa các lần chạy.
-      # Xem infra/local/compose.duckdb.yml
-      path: "{{ env_var('DUCKDB_PATH', '/warehouse/hdh.duckdb') }}"
+      # Trong container: DUCKDB_PATH=/warehouse/hdh.duckdb, nằm trên named volume nên
+      # giữ lại giữa các lần chạy. Xem infra/local/compose.duckdb.yml.
+      # Fallback là file cạnh project — chỉ dùng khi chạy dbt ngoài container (IDE),
+      # vì /warehouse không tồn tại trên host. File này đã nằm trong .gitignore.
+      path: "{{ env_var('DUCKDB_PATH', 'hdh_local.duckdb') }}"
       # silver/gold vào schema analytics; bronze vào schema bronze (đặt ở dbt_project.yml)
       schema: "{{ env_var('ANALYTICS_SCHEMA', 'analytics') }}"
       threads: 4
