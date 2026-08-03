@@ -35,7 +35,7 @@ ngôi sao, nên gọi là star schema. Mọi câu hỏi đều có dạng: *"s�
 "thuộc tính nào" (dimension)*.
 
 | | Fact | Dimension |
-|---|---|---|
+| --- | --- | --- |
 | Chứa gì | Số đo cộng được | Thuộc tính mô tả để lọc/nhóm |
 | Số dòng | Rất nhiều (714.669) | Ít (51 → 121.930) |
 | Tăng theo | Thời gian | Gần như không tăng |
@@ -103,7 +103,7 @@ erDiagram
 Số dòng thật sau khi build:
 
 | Bảng | Dòng | Ghi chú |
-|---|---:|---|
+| --- | ---: | --- |
 | `fact_order_items` | 714.669 | khớp chính xác `silver_order_items` |
 | `dim_customer` | 121.930 | |
 | `dim_date` | 4.018 | tự sinh, 2012-01-01 → 2022-12-31 |
@@ -243,7 +243,7 @@ Nguồn là snowflake: `customers → geography` (2 tầng). Star schema **cố 
 `dim_customer` mang luôn `city`, `region`, `district`.
 
 | | Snowflake (nguồn) | Star (dim_customer) |
-|---|---|---|
+| --- | --- | --- |
 | Lưu trữ | Gọn — 40k zip lưu 1 lần | Lặp cho 122k khách |
 | Query theo vùng | 2 join | **1 join** |
 
@@ -260,7 +260,7 @@ thì hầu như luôn nên làm phẳng.
 Star schema có nguyên tắc: **khoá ngoại trong fact không được NULL**. Bằng chứng vì sao:
 
 | Cách làm | Số dòng sau khi inner join với dim_promotion |
-|---|---:|
+| --- | ---: |
 | Dùng `NO_PROMO` | **714.669** ✅ giữ nguyên |
 | Để `promo_id` NULL | **276.316** ❌ mất 438.353 dòng (61,3%) |
 
@@ -373,7 +373,7 @@ GROUP BY 1, 2 ORDER BY 1, 4 DESC;
 Ghi ra để người sau không phải tự phát hiện:
 
 | Hạn chế | Ảnh hưởng | Khi nào cần sửa |
-|---|---|---|
+| --- | --- | --- |
 | `promo_id_2` chỉ là degenerate | Phân tích theo `promo_key` **chỉ tính khuyến mãi thứ 1**. 206/714.669 dòng (0,03%) có promo thứ 2 bị bỏ sót | Khi tỷ lệ stacking tăng đáng kể → cần bridge table |
 | SCD Type 1 | Khách chuyển vùng thì đơn cũ **bị gán vùng mới** — báo cáo lịch sử theo vùng sẽ đổi theo thời gian | Khi cần báo cáo lịch sử chính xác → `dbt snapshot` + Type 2 |
 | Không thể dựng lại lịch sử | Nguồn chỉ có 1 dòng/khách, không có `valid_from`/`valid_to` → **không hồi tố được** | Bắt đầu chụp snapshot từ hôm nay, không cứu được quá khứ |
@@ -393,7 +393,7 @@ chuyển nhà.
 Ba loại fact còn thiếu, mỗi loại dạy một khái niệm khác:
 
 | Fact | Loại | Hạt | Khái niệm mới |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `fact_returns` | transaction | một lần trả | Dùng lại `dim_date`/`dim_product` — *conformed dimension* |
 | `fact_orders` | **accumulating snapshot** | một đơn | Nhiều mốc thời gian trên một dòng: `order_date` → `ship_date` → `delivery_date`, đo được thời gian giữa các mốc. Gộp `orders` + `shipments`. Cũng là ví dụ *role-playing dimension* — `dim_date` đóng 3 vai |
 | `fact_inventory` | **periodic snapshot** | sản phẩm × tháng | Số đo **semi-additive**: `stock_on_hand` cộng được theo sản phẩm nhưng **không cộng được theo thời gian** (tồn tháng 1 + tồn tháng 2 ≠ gì cả) |

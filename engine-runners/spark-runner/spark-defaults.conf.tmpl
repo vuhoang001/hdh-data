@@ -1,0 +1,26 @@
+# =============================================================================
+# TEMPLATE cấu hình Spark. Mọi ${VAR} được thay bằng biến môi trường (đến từ .env)
+# lúc container khởi động — xem docker/images/spark-entrypoint.sh.
+#
+# Vì sao phải dùng template thay vì ghi ${env:VAR} thẳng vào file:
+# Iceberg đọc các key spark.sql.catalog.* qua getAllConfs của Spark, đường này KHÔNG
+# chạy qua bộ nội suy biến của SQLConf — nên ${env:...} sẽ tới Iceberg nguyên văn.
+# Nội suy trước ở entrypoint là cách chắc chắn đúng.
+#
+# ĐỪNG hardcode endpoint/bucket ở đây. Sửa .env.
+# =============================================================================
+
+spark.sql.extensions   org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+
+# ---- Catalog Iceberg qua REST, dữ liệu nằm trên MinIO (S3) ------------------
+spark.sql.catalog.${ICEBERG_CATALOG_NAME}                       org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.${ICEBERG_CATALOG_NAME}.type                  rest
+spark.sql.catalog.${ICEBERG_CATALOG_NAME}.uri                   ${ICEBERG_REST_URI}
+spark.sql.catalog.${ICEBERG_CATALOG_NAME}.warehouse             s3://${WAREHOUSE_BUCKET}/
+spark.sql.catalog.${ICEBERG_CATALOG_NAME}.io-impl               org.apache.iceberg.aws.s3.S3FileIO
+spark.sql.catalog.${ICEBERG_CATALOG_NAME}.s3.endpoint           ${S3_ENDPOINT}
+spark.sql.catalog.${ICEBERG_CATALOG_NAME}.s3.path-style-access  true
+
+# Dùng iceberg làm catalog mặc định
+spark.sql.defaultCatalog        ${ICEBERG_CATALOG_NAME}
+spark.sql.catalogImplementation in-memory

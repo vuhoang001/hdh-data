@@ -1,0 +1,47 @@
+name: CI — pipeline DuckDB
+
+# Chạy toàn bộ pipeline bằng môi trường nhẹ (DuckDB) trên mỗi push/PR.
+# Cùng model, cùng test với môi trường lakehouse — chỉ khác engine, nên lỗi logic
+# transform hay lỗi test dữ liệu đều bị bắt ở đây mà không cần dựng MinIO/Spark/Trino.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  duckdb-pipeline:
+    name: bronze → silver → gold + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tạo .env từ mẫu
+        run: cp .env.example .env
+
+      - name: Chạy pipeline + test
+        run: make ci-local
+
+  lint:
+    name: Kiểm tra cú pháp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Biên dịch code ingestion
+        run: python -m compileall -q ingestion
+
+      - name: Test (đăng ký nguồn khớp connector + CSV)
+        run: |
+          pip install --quiet pytest
+          pytest tests -q
+
+      - name: Kiểm tra compose hợp lệ
+        run: |
+          cp .env.example .env
+          docker compose --project-directory . -f infra/local/compose.duckdb.yml config -q
+          docker compose --project-directory . -f infra/local/compose.lakehouse.yml config -q

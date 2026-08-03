@@ -1,0 +1,113 @@
+# =============================================================================
+# ĐĂNG KÝ NGUỒN — nơi duy nhất liệt kê các bảng bronze của pipeline.
+#
+# Thêm một bảng mới = thêm một mục ở đây + tạo file connectors/ingest_<table>.py.
+# Makefile đọc trực tiếp file này để sinh target `make ingest-<table>`, nên không
+# còn danh sách bảng nào bị lặp ở chỗ khác.
+#
+# Các trường:
+#   table        : tên bảng trong namespace bronze (BRONZE_NAMESPACE ở .env)
+#   file         : tên file trong data/ (hoặc định danh nguồn, tuỳ `type`)
+#   type         : loại nguồn — phải là một reader đã đăng ký ở ingestion/common/io.py.
+#                  Hiện chỉ có `csv`. ĐÂY LÀ CHỖ ĐỔI KHI LÊN PRODUCTION: đổi thành
+#                  `postgres` là bảng đó lấy từ DB thay vì file, và transform/silver/gold
+#                  không phải sửa gì. Test bắt lỗi nếu khai loại chưa có reader.
+#   partition_by : chiến lược partition Iceberg, khai báo trong file connector.
+#                  Ghi ở đây để nhìn thấy toàn cảnh mà không phải mở 13 file.
+#   rows         : số dòng xấp xỉ, dùng để hiểu vì sao chọn chiến lược partition đó
+# =============================================================================
+version: 1
+
+sources:
+  - table: orders
+    file: orders.csv
+    type: csv
+    partition_by: months(order_date)
+    rows: 646945
+    description: Đơn hàng. Theo ngày sẽ ra ~3800 partition -> partition theo tháng.
+
+  - table: order_items
+    file: order_items.csv
+    type: csv
+    partition_by: bucket(16, order_id)
+    rows: 714669
+    description: Dòng hàng. Không có cột ngày -> bucket theo order_id để join đỡ shuffle.
+
+  - table: customers
+    file: customers.csv
+    type: csv
+    partition_by: years(signup_date)
+    rows: 121930
+    description: Khách hàng. customer_id là khoá chính.
+
+  - table: geography
+    file: geography.csv
+    type: csv
+    partition_by: null
+    rows: 39948
+    description: Tra cứu zip -> city/region/district. Dimension nhỏ, để nguyên một file.
+
+  - table: products
+    file: products.csv
+    type: csv
+    partition_by: null
+    rows: 2412
+    description: Sản phẩm. price là giá NIÊM YẾT HIỆN TẠI, không phải giá bán lịch sử.
+
+  - table: payments
+    file: payments.csv
+    type: csv
+    partition_by: bucket(16, order_id)
+    rows: 646945
+    description: Thanh toán theo đơn.
+
+  - table: shipments
+    file: shipments.csv
+    type: csv
+    partition_by: months(ship_date)
+    rows: 566000
+    description: Vận chuyển. delivery_date < ship_date là lỗi dữ liệu chắc chắn.
+
+  - table: returns
+    file: returns.csv
+    type: csv
+    partition_by: years(return_date)
+    rows: 40000
+    description: Trả hàng.
+
+  - table: reviews
+    file: reviews.csv
+    type: csv
+    partition_by: years(review_date)
+    rows: 114000
+    description: Đánh giá, rating 1-5.
+
+  - table: promotions
+    file: promotions.csv
+    type: csv
+    partition_by: null
+    rows: 50
+    description: Khuyến mãi. applicable_category NULL = áp dụng mọi category.
+
+  - table: inventory
+    file: inventory.csv
+    type: csv
+    partition_by: years(snapshot_date)
+    rows: 60000
+    description: Snapshot tồn kho theo tháng. Nguồn đã phi chuẩn hoá sẵn.
+
+  - table: sales_daily
+    file: sales.csv
+    type: csv
+    partition_by: null
+    rows: 3833
+    description: >
+      Doanh thu/giá vốn TỔNG HỢP SẴN theo ngày. KHÔNG khớp với doanh thu tính từ
+      order_items — hai nguồn số độc lập, chênh lệch là thứ cần điều tra.
+
+  - table: web_traffic
+    file: web_traffic.csv
+    type: csv
+    partition_by: null
+    rows: 3700
+    description: Lưu lượng web tổng hợp theo ngày + nguồn traffic.

@@ -6,11 +6,11 @@ nó**, chứ không chỉ đưa code để copy.
 
 > **Dự án có HAI môi trường** (xem [README](../README.md)). Tài liệu này mô tả đường
 > **Spark + Trino**. Hai điểm cần nhớ khi làm việc với cả hai:
-> 1. **Lệnh `make` mang tiền tố `st-`** cho stack Spark+Trino (`make st-ingest`,
->    `make st-dbt`, `make st-trino`...). Các lệnh `docker compose ...` bên dưới cần thêm
->    `-f environments/spark-trino/docker-compose.yml` — hoặc dùng target `st-*` tương ứng.
+> 1. **Lệnh `make` mang tiền tố `lake-`** cho stack lakehouse (`make lake-ingest`,
+>    `make lake-dbt`, `make lake-trino`...). Các lệnh `docker compose ...` bên dưới cần thêm
+>    `-f infra/local/compose.lakehouse.yml` — hoặc dùng target `lake-*` tương ứng.
 > 2. **Để bảng mới chạy được cả ở môi trường DuckDB**, thêm một model
->    `dbt/hdh_dbt/models/bronze/bronze_<bảng>.sql` đọc CSV (dùng macro `read_source_csv` +
+>    `transforms/models/bronze/bronze_<bảng>.sql` đọc CSV (dùng macro `read_source_csv` +
 >    `invalid_reason`, xem các file bronze có sẵn). Silver chỉ cần gọi `{{ bronze('<bảng>') }}`
 >    là tự trỏ đúng nguồn theo môi trường — không phải sửa gì thêm.
 
@@ -40,7 +40,7 @@ nó**, chứ không chỉ đưa code để copy.
 nên khi có lỗi bạn biết ngay phải sửa ở đâu.
 
 | Layer | Trả lời câu hỏi | Ai ghi | Vật liệu hoá |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **bronze** | "Dữ liệu nguồn nói gì?" | Spark | table (Iceberg) |
 | **silver** | "Dữ liệu nào dùng được?" | dbt | view |
 | **gold** | "Câu trả lời cho business là gì?" | dbt | table (Iceberg) |
@@ -56,7 +56,7 @@ rồi. Bronze giữ nguyên hiện trạng nguồn để bạn luôn truy ngư�
 - Gold có `group by`, `join`, `sum` trên hàng trăm nghìn dòng — đắt. Làm `table` để tính một
   lần rồi mọi người query lại kết quả đã tính sẵn, thay vì tính lại từ đầu mỗi lần.
 
-Quy tắc này khai báo ở `dbt/hdh_dbt/dbt_project.yml` theo **thư mục**, nên file mới bạn thêm
+Quy tắc này khai báo ở `transforms/dbt_project.yml` theo **thư mục**, nên file mới bạn thêm
 vào `models/silver/` tự động là view, không cần khai báo gì thêm:
 
 ```yaml
@@ -81,7 +81,7 @@ Nói ngắn gọn: **Spark đưa dữ liệu vào được thế giới SQL, dbt
 
 ### Tại sao có thư mục `common/` và không được sửa nó?
 
-`spark/jobs/common/` chỉ chứa **hạ tầng** — thứ đúng với mọi bảng, không phụ thuộc bảng nào:
+`ingestion/common/` chỉ chứa **hạ tầng** — thứ đúng với mọi bảng, không phụ thuộc bảng nào:
 tạo SparkSession, đọc CSV, ghi Iceberg, logging.
 
 Business logic — schema của bảng, rule làm sạch — nằm trong chính file job của bảng đó.
@@ -96,15 +96,32 @@ cũng an toàn như thêm bảng thứ 2.
 ## Checklist
 
 | Bước | File | Tạo mới hay sửa |
-|---|---|---|
-| 1 | `spark/jobs/bronze/ingest_<bảng>.py` | tạo mới |
-| 2 | `Makefile` | sửa (thêm target) |
-| 3 | `dbt/hdh_dbt/models/silver/_sources.yml` | sửa (thêm mục `tables`) |
-| 4 | `dbt/hdh_dbt/models/silver/silver_<bảng>.sql` + `.yml` | tạo mới |
-| 5 | `dbt/hdh_dbt/models/gold/gold_<chủ đề>.sql` + `.yml` | tạo mới (khi cần tổng hợp) |
+| --- | --- | --- |
+| 1 | `ingestion/config/sources.yml` | sửa (thêm 1 mục) |
+| 2 | `ingestion/connectors/ingest_<bảng>.py` | tạo mới — bronze bản Spark |
+| 3 | `transforms/models/bronze/bronze_<bảng>.sql` | tạo mới — bronze bản DuckDB, **cùng tập nhãn lỗi** |
+| 4 | `transforms/models/silver/_sources.yml` | sửa (thêm mục `tables`) |
+| 5 | `transforms/models/silver/silver_<bảng>.sql` + `.yml` | tạo mới |
+| 6 | `transforms/models/gold/gold_<chủ đề>.sql` + `.yml` | tạo mới (khi cần tổng hợp) |
 
-Không phải sửa `dbt_project.yml`: dbt tự quét thư mục `models/`, và rule materialization áp
-theo thư mục nên file mới tự thừa hưởng.
+**Không phải sửa `Makefile`**: danh sách target `lake-ingest-*` sinh ra từ `sources.yml`.
+
+**Không phải sửa `dbt_project.yml`**: dbt tự quét thư mục `models/`, và rule materialization
+áp theo thư mục nên file mới tự thừa hưởng.
+
+**Vì sao bước 2 và 3 làm cùng một việc?** Vì dự án có hai môi trường và bronze được cài đặt
+hai lần — PySpark cho lakehouse, SQL cho DuckDB. Đó là đánh đổi để môi trường nhẹ chạy được
+mà không cần Spark. Silver và gold thì viết **một lần** duy nhất, nhờ macro `{{ bronze() }}`.
+
+Sau khi xong, chạy:
+
+```bash
+pytest tests -q
+```
+
+Nó bắt ba loại lỗi hay gặp nhất: khai bảng mà quên connector, trỏ tới CSV không tồn tại, và
+**hai bản bronze khai rule lệch nhau** — lỗi cuối cùng nguy hiểm nhất vì nó khiến hai môi
+trường cho hai kết quả khác nhau mà không có gì báo.
 
 ---
 
@@ -114,7 +131,7 @@ theo thư mục nên file mới tự thừa hưởng.
 head -3 data/order_items.csv
 ```
 
-```
+```text
 order_id,product_id,quantity,unit_price,discount_amount,promo_id,promo_id_2
 1,2400,7,1138.22,0.0,,
 ```
@@ -133,32 +150,44 @@ sửa sau khi đã ghi bảng thì tốn công hơn nhiều:
 
 ## Bước 1 — Spark job (bronze)
 
-File `spark/jobs/bronze/ingest_order_items.py`. Cấu trúc luôn gồm 3 phần, và **chỉ phần giữa
-thay đổi giữa các bảng** — hai phần còn lại copy y nguyên từ job có sẵn.
+File `ingestion/connectors/ingest_order_items.py`. Cấu trúc luôn gồm 3 phần, và **chỉ phần giữa
+phải nghĩ** — hai phần còn lại gần như giống nhau ở mọi bảng.
 
-### Phần 1: Hằng số
+### Phần 1: Khai báo bảng trong đăng ký nguồn
 
-```python
-APP_NAME = "hdh-bronze-order-items"
-NAMESPACE = "iceberg.bronze"
-TABLE = "iceberg.bronze.order_items"
-SOURCE_CSV = "/opt/spark/data/order_items.csv"
+Trước khi viết code, thêm một mục vào `ingestion/config/sources.yml`:
+
+```yaml
+  - table: order_items
+    file: order_items.csv
+    partition_by: bucket(16, order_id)
+    rows: 714669
+    description: Dòng hàng. Không có cột ngày -> bucket theo order_id để join đỡ shuffle.
 ```
 
-Từng cái dùng làm gì:
+**Tại sao lại có file đăng ký riêng thay vì để mỗi job tự khai?** Vì danh sách bảng bị cần ở
+nhiều chỗ: Makefile phải sinh target `make lake-ingest-<bảng>`, test phải biết bảng nào cần có
+connector, người đọc muốn thấy toàn cảnh 13 bảng mà không phải mở 13 file. Nếu mỗi nơi tự giữ
+một danh sách thì sớm muộn chúng lệch nhau. Ở đây chỉ có **một** danh sách.
 
-- **`APP_NAME`** — tên hiển thị trong Spark UI và log. Khi có nhiều job chạy cùng lúc, đây là
-  thứ giúp bạn biết job nào đang ngốn tài nguyên hay job nào treo.
-- **`NAMESPACE`** — namespace (schema) trong Iceberg. Phải tạo trước khi ghi bảng, giống như
-  phải có thư mục trước khi tạo file trong đó.
-- **`TABLE`** — tên đầy đủ 3 cấp `catalog.namespace.table`. `iceberg` là catalog khai báo ở
-  `spark/conf/spark-defaults.conf`; thiếu một cấp là Spark ghi nhầm chỗ.
-- **`SOURCE_CSV`** — đường dẫn **bên trong container**, không phải trên máy bạn. `docker-compose.yml`
-  mount `./data` vào `/opt/spark/data`, nên trên máy là `data/order_items.csv` còn với Spark
-  là `/opt/spark/data/order_items.csv`.
+Trường `partition_by` và `rows` ghi ở đây là để **đọc**, không phải để chạy — chiến lược
+partition thật vẫn khai báo trong file connector (xem [Chọn partition](#chọn-partition)).
+Đặt cạnh số dòng để lần sau nhìn vào là hiểu ngay vì sao bảng này chọn partition kiểu đó.
 
-Tách thành hằng số ở đầu file thay vì viết thẳng vào code để người đọc biết ngay job này đọc
-gì và ghi đi đâu, không phải dò xuống dưới.
+Còn tên bảng đầy đủ và đường dẫn CSV thì **không job nào tự ghép**: `ingestion/common/config.py`
+dựng chúng từ `.env`.
+
+```python
+# ingestion/common/config.py — nơi duy nhất biết những thứ này
+CATALOG = os.environ.get("ICEBERG_CATALOG_NAME", "iceberg")
+BRONZE_NAMESPACE = f"{CATALOG}.{os.environ.get('BRONZE_NAMESPACE', 'bronze')}"
+DATA_DIR = os.environ.get("SPARK_DATA_DIR", "/opt/spark/data")
+```
+
+Nhờ vậy `table="order_items"` trong connector tự thành `iceberg.bronze.order_items`, và
+`source_csv="order_items.csv"` tự thành `/opt/spark/data/order_items.csv` — đường dẫn **bên
+trong container**, không phải trên máy bạn (compose mount `./data` vào `/opt/spark/data`).
+Đổi tên catalog trong `.env` là cả Spark, Trino và dbt cùng đổi theo.
 
 ### Phần 2: Business logic — phần duy nhất phải nghĩ
 
@@ -236,7 +265,7 @@ biểu diễn "không có giá trị".
 điều kiện sai. `concat_ws` bỏ qua mọi `NULL` khi nối chuỗi. Kết hợp lại:
 
 | Tình huống | `concat_ws` cho ra | `_invalid_reason` | `_is_valid` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Dòng sạch (mọi `when` đều `NULL`) | `""` | `NULL` | `true` |
 | Hỏng 1 lỗi | `"quantity_invalid"` | `"quantity_invalid"` | `false` |
 | Hỏng 2 lỗi | `"product_id_missing, quantity_invalid"` | (như trên) | `false` |
@@ -266,7 +295,7 @@ Rule mạnh nhất không phải "cột này không được rỗng" mà là **q
 phá vỡ**, vì đây là thứ bắt được lỗi mà kiểm tra từng cột riêng lẻ không thấy:
 
 | Job | Rule | Tại sao chắc chắn là lỗi |
-|---|---|---|
+| --- | --- | --- |
 | `shipments` | `delivery_date < ship_date` | Giao trước khi gửi là bất khả thi về vật lý |
 | `web_traffic` | `unique_visitors > sessions` | Một người vào nhiều phiên được; một phiên không thể nhiều người |
 | `web_traffic` | `page_views < sessions` | Mỗi phiên xem ít nhất 1 trang |
@@ -324,7 +353,7 @@ lúc import — trước khi `build_spark_session()` được gọi — và job 
 **Cách chọn — mục tiêu là file cỡ vài MB, không phải vài chục KB:**
 
 | Tình huống | Cách làm | Ví dụ trong repo |
-|---|---|---|
+| --- | --- | --- |
 | Bảng lớn (>500k dòng), có cột ngày | `[F.months("cột_ngày")]` | `orders`, `shipments` |
 | Bảng vừa (40k–150k dòng), có cột ngày | `[F.years("cột_ngày")]` | `customers`, `reviews`, `returns`, `inventory` |
 | Không có cột ngày | `[F.bucket(N, "khoá_join")]` | `order_items`, `payments` |
@@ -357,7 +386,7 @@ hơn. **Cùng khoảng thời gian nhưng khác kích thước thì chọn khác
 Bronze giữ nguyên nguồn, nhưng **tên cột là ngoại lệ có chủ ý**. Hai job trong repo đổi tên:
 
 | Nguồn | Bronze | Lý do |
-|---|---|---|
+| --- | --- | --- |
 | `sales.csv`: `Date, Revenue, COGS` | `sale_date, revenue, cogs` | `Date` trùng từ khoá SQL; repo dùng snake_case |
 | `web_traffic.csv`: `date` | `traffic_date` | `date` vừa là từ khoá vừa là tên kiểu dữ liệu |
 
@@ -380,23 +409,52 @@ docker compose exec trino trino --catalog iceberg --execute \
   "SELECT sale_date, revenue, cogs FROM bronze.sales_daily ORDER BY sale_date LIMIT 1;"
 ```
 
-### Phần 3: Orchestration — copy y nguyên
+### Phần 3: Khai báo job — 8 dòng, không có logic
 
 ```python
-def run(spark: SparkSession, source_csv: str, table: str, logger) -> None:
-    logger.info("Đọc %s", source_csv)
-    df = read_csv(spark, source_csv, SCHEMA)
+JOB = BronzeJob(
+    table="order_items",
+    source_csv="order_items.csv",
+    schema=SCHEMA,
+    transform=transform,
+    partition_by=partition_columns,     # bỏ dòng này nếu để nguyên một file
+)
 
-    bronze_df = add_audit_columns(transform(df), source_csv)
-
-    create_namespace(spark, NAMESPACE)
-    logger.info("Ghi bảng %s", table)
-    write_iceberg_table(bronze_df, table, partition_columns())
-
-    total = count_table_rows(spark, table)
-    invalid = spark.table(table).filter("not _is_valid").count()
-    logger.info("%s: %s dòng (hợp lệ=%s, lỗi=%s)", table, total, total - invalid, invalid)
+if __name__ == "__main__":
+    run_job(JOB)
 ```
+
+Hết. Không `argparse`, không `main()`, không `try/finally` — toàn bộ nằm trong
+`ingestion/common/job.py` và dùng chung cho cả 13 bảng:
+
+```python
+# ingestion/common/job.py — viết một lần, 13 job dùng chung
+def _ingest(spark, job, source_csv, table, logger):
+    logger.info("Đọc %s", source_csv)
+    df = read_csv(spark, source_csv, job.schema)
+
+    bronze_df = add_audit_columns(job.transform(df), source_csv)
+
+    create_namespace(spark, config.BRONZE_NAMESPACE)
+    logger.info("Ghi bảng %s", table)
+    write_iceberg_table(bronze_df, table, job.partition_by() if job.partition_by else None)
+
+    written = spark.table(table)
+    total = count_table_rows(spark, table)
+    invalid = written.filter("not _is_valid").count()
+    ...
+```
+
+**Tại sao phải gom vào khung chung thay vì copy y nguyên vào mỗi file?** Vì "copy y nguyên"
+chỉ đúng cho tới lần đầu cần sửa. Muốn thêm một cột audit, hay đổi cách log, hay bọc thêm
+retry — với 13 bản sao thì phải sửa 13 chỗ và chắc chắn sẽ sót một chỗ. Với một khung chung
+thì sửa một lần. Đổi lại, mỗi connector giờ chỉ còn phần thật sự riêng của bảng đó.
+
+`BronzeJob` là một `dataclass` mô tả **cái gì** cần làm; `run_job()` biết **làm thế nào**.
+Ranh giới đó cũng là lý do connector không cần import `SparkSession` hay `argparse`.
+
+> Cần chạy thử trên file nhỏ hay ghi ra bảng tạm? `run_job()` vẫn nhận tham số dòng lệnh:
+> `spark-submit ingest_order_items.py --source-csv /opt/spark/data/sample.csv --table iceberg.bronze.tmp`
 
 Từng hàm gọi từ `common/` làm gì:
 
@@ -406,11 +464,12 @@ Từng hàm gọi từ `common/` làm gì:
   cần?** Ba tháng sau, khi một con số trông sai, đây là thứ trả lời "dòng này từ file nào,
   nạp lúc nào". Không có nó thì bảng bronze là hộp đen. Đặt trong `common/` vì đúng với mọi
   bảng, không phụ thuộc nội dung.
-- **`create_namespace(spark, NAMESPACE)`** — `CREATE NAMESPACE IF NOT EXISTS`. Phải có vì ghi
-  vào namespace chưa tồn tại sẽ lỗi. Có `IF NOT EXISTS` nên chạy lại nhiều lần vô hại.
+- **`create_namespace(spark, config.BRONZE_NAMESPACE)`** — `CREATE NAMESPACE IF NOT EXISTS`.
+  Phải có vì ghi vào namespace chưa tồn tại sẽ lỗi. Có `IF NOT EXISTS` nên chạy lại nhiều lần
+  vô hại.
 - **`write_iceberg_table(df, table, partition_columns())`** — ghi bằng `createOrReplace()`,
   tức **ghi đè toàn bộ bảng**. Nghĩa là job **idempotent**: chạy 1 lần hay 10 lần đều ra kết
-  quả y hệt, không nhân đôi dữ liệu. Đây là lý do bạn có thể vô tư `make st-ingest` lại khi nghi
+  quả y hệt, không nhân đôi dữ liệu. Đây là lý do bạn có thể vô tư `make lake-ingest` lại khi nghi
   ngờ — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) để hiểu chuyện gì thực
   sự xảy ra bên dưới.
 
@@ -418,54 +477,67 @@ Từng hàm gọi từ `common/` làm gì:
 invalid = 0` nói lên nhiều hơn dòng chữ "thành công": nếu hôm nào đó `total` tụt còn 300k,
 bạn biết ngay nguồn có vấn đề, không phải chờ tới lúc report ra số lạ.
 
+Phần dựng và dọn Spark session cũng nằm trong `run_job()`:
+
 ```python
-def main():
-    args = parse_args()
-    logger = get_logger("bronze.order_items")
-    spark = build_spark_session(APP_NAME)
+def run_job(job: BronzeJob) -> None:
+    args = _parse_args(job)
+    logger = get_logger(f"bronze.{job.table}")
+    spark = build_spark_session(f"hdh-bronze-{job.table.replace('_', '-')}")
     try:
-        run(spark, args.source_csv, args.table, logger)
+        _ingest(spark, job, args.source_csv, args.table, logger)
     finally:
         spark.stop()
 ```
 
-- **`parse_args()`** — cho phép override đường dẫn/tên bảng qua dòng lệnh. **Tại sao cần khi
-  đã có hằng số?** Để test job trên file nhỏ (`--source-csv .../sample.csv`) hoặc ghi ra bảng
-  tạm (`--table iceberg.bronze.order_items_test`) mà không phải sửa code.
+- **`build_spark_session(...)`** — tên app hiển thị trong Spark UI và log, sinh tự động từ tên
+  bảng. Khi nhiều job chạy cùng lúc, đây là thứ giúp biết job nào đang ngốn tài nguyên hay treo.
 - **`try/finally: spark.stop()`** — `finally` đảm bảo giải phóng tài nguyên **kể cả khi job
   lỗi**. Không có nó, job chết giữa chừng sẽ để lại session treo giữ RAM của cluster.
-- **`if __name__ == "__main__":`** — chỉ chạy `main()` khi file được `spark-submit` trực tiếp,
-  không chạy khi bị import. Nhờ đó bạn có thể `from ingest_order_items import transform` để
-  viết unit test cho riêng hàm `transform` mà không khởi động cả job.
+- **`_parse_args(job)`** — cho phép override đường dẫn/tên bảng qua dòng lệnh, mặc định lấy từ
+  `config.py`. Để test job trên file nhỏ hoặc ghi ra bảng tạm mà không phải sửa code.
+- **`if __name__ == "__main__":`** — chỉ chạy khi file được `spark-submit` trực tiếp, không
+  chạy khi bị import. Nhờ đó bạn có thể `from ingest_order_items import transform` để viết
+  unit test cho riêng hàm `transform` mà không khởi động cả job.
 
 ---
 
-## Bước 2 — Makefile
+## Bước 2 — Makefile: không phải sửa gì
+
+Đây là chỗ bước 1 (khai báo trong `sources.yml`) trả công. Makefile **đọc thẳng file đăng ký**
+và tự sinh target cho mọi bảng:
 
 ```makefile
-.PHONY: up down ... ingest ingest-orders ingest-order-items ...
+SOURCES_FILE   = ingestion/config/sources.yml
+BRONZE_TABLES := $(shell sed -n 's/^[[:space:]]*-[[:space:]]*table:[[:space:]]*//p' $(SOURCES_FILE))
+INGEST_TARGETS = $(addprefix lake-ingest-,$(BRONZE_TABLES))
 
-ingest: ingest-orders ingest-order-items   ## Ingest toàn bộ bảng bronze
+lake-ingest: $(INGEST_TARGETS)   ## Ingest toàn bộ bảng bronze
 
-ingest-orders: ## Chỉ ingest bảng orders
-	docker compose exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/bronze/ingest_orders.py
-
-ingest-order-items: ## Chỉ ingest bảng order_items
-	docker compose exec spark /opt/spark/bin/spark-submit /opt/spark/jobs/bronze/ingest_order_items.py
+# Một pattern rule thay cho 13 target lặp lại
+lake-ingest-%:
+	$(SPARK_SUBMIT)/ingest_$*.py
 ```
 
+**`lake-ingest: $(INGEST_TARGETS)` nghĩa là gì?** Trong Make, những tên đứng sau dấu `:` là
+**prerequisites** — Make chạy chúng trước, lần lượt. Target `lake-ingest` tự nó không có lệnh
+nào, chỉ gom 13 target kia.
+
 **Tại sao mỗi bảng một target riêng, lại còn thêm target gộp?** Hai nhu cầu khác nhau: sửa
-rule của `order_items` thì chỉ cần chạy lại nó (`make st-ingest-order-items`), tiết kiệm vài
-phút; còn dựng lại từ đầu sau `make st-clean` thì cần tất cả (`make st-ingest`).
+rule của `order_items` thì chỉ cần chạy lại nó (`make lake-ingest-order_items`), tiết kiệm vài
+phút; còn dựng lại từ đầu sau `make lake-clean` thì cần tất cả (`make lake-ingest`).
 
-**`ingest: ingest-orders ingest-order-items` nghĩa là gì?** Trong Make, những tên đứng sau
-dấu `:` là **prerequisites** — Make chạy chúng trước, lần lượt. Target `ingest` tự nó không
-có lệnh nào, chỉ gom hai target kia.
+**`%` trong `lake-ingest-%` là gì?** Pattern rule — `%` khớp phần bất kỳ của tên target, và
+`$*` trong recipe là phần đã khớp. `make lake-ingest-orders` → `$*` = `orders` →
+`spark-submit .../ingest_orders.py`. Một luật thay cho 13 target chép tay.
 
-**`.PHONY` để làm gì?** Nó báo Make rằng đây là *tên lệnh*, không phải *tên file* cần tạo ra.
-Không khai báo thì nếu thư mục lỡ có file tên `ingest`, Make sẽ thấy "file đã tồn tại, không
-cần làm gì" và **im lặng không chạy lệnh**. Đây là lỗi rất khó đoán, nên cứ thêm mọi target
-vào `.PHONY`.
+> **Cạm bẫy:** đừng khai báo các target `lake-ingest-*` vào `.PHONY`. GNU Make **bỏ qua việc
+> tìm pattern rule cho target phony**, nên `make lake-ingest-orders` sẽ báo
+> `Nothing to be done` thay vì chạy. Chúng không trùng tên file nào nên vẫn luôn chạy lại.
+
+`.PHONY` vẫn cần cho các target thường (`lake-up`, `lake-dbt`, ...): nó báo Make rằng đây là
+*tên lệnh*, không phải *tên file* cần tạo ra. Không khai báo thì nếu thư mục lỡ có file trùng
+tên, Make sẽ thấy "file đã tồn tại" và **im lặng không chạy lệnh**.
 
 > **Nhớ dùng Tab, không phải space** để thụt dòng lệnh trong Makefile — Make bắt buộc Tab và
 > báo `missing separator` nếu bạn dùng space.
@@ -473,14 +545,15 @@ vào `.PHONY`.
 Kiểm tra target đúng chưa mà không chạy thật:
 
 ```bash
-make -n ingest    # in ra các lệnh sẽ chạy, không thực thi
+make -n lake-ingest-order_items   # in ra lệnh sẽ chạy, không thực thi
+pytest tests -q              # bắt lỗi đăng ký lệch với connector
 ```
 
 ---
 
 ## Bước 3 — Khai báo source cho dbt
 
-`dbt/hdh_dbt/models/silver/_sources.yml`:
+`transforms/models/silver/_sources.yml`:
 
 ```yaml
 version: 2
@@ -592,7 +665,7 @@ models:
 ```
 
 **Test dbt hoạt động thế nào?** Mỗi test compile thành một câu SQL đếm dòng vi phạm. Trả về
-0 dòng = PASS. Không có gì huyền bí — bạn xem được SQL thật trong `dbt/hdh_dbt/target/compiled/`.
+0 dòng = PASS. Không có gì huyền bí — bạn xem được SQL thật trong `transforms/target/compiled/`.
 
 Từng test và lý do có nó:
 
@@ -610,7 +683,7 @@ nhiều dòng hàng — nên test `unique` ở đây **sẽ fail**. Chỉ đặt
 khoá chính, như `order_id` của bảng `orders`.
 
 **Tại sao `dbt_utils.accepted_range` mà không phải `accepted_range`?** Đây là test từ package
-`dbt_utils` khai báo ở `packages.yml`, phải gọi kèm tên package. Nếu chưa chạy `make st-dbt-deps`
+`dbt_utils` khai báo ở `packages.yml`, phải gọi kèm tên package. Nếu chưa chạy `make lake-dbt-deps`
 thì dbt báo lỗi không tìm thấy macro.
 
 ---
@@ -731,17 +804,17 @@ cho bạn biết một sự thật về dữ liệu.
 ## Chạy
 
 ```bash
-make st-ingest-order-items    # chỉ chạy job mới (make st-ingest chạy lại toàn bộ bảng)
-make st-dbt                   # = dbt build: chạy model + test
+make lake-ingest-order_items    # chỉ chạy job mới (make lake-ingest chạy lại toàn bộ bảng)
+make lake-dbt                   # = dbt build: chạy model + test
 ```
 
 **Tại sao `dbt build` mà không phải `dbt run`?** `dbt run` chỉ tạo model; `dbt build` tạo model
 **và chạy test ngay sau mỗi model**, theo đúng thứ tự phụ thuộc. Nghĩa là nếu silver fail test,
-gold **không được build** từ dữ liệu hỏng đó. Đó là lý do `make st-dbt` dùng `build`.
+gold **không được build** từ dữ liệu hỏng đó. Đó là lý do `make lake-dbt` dùng `build`.
 
 Kết quả mong đợi:
 
-```
+```text
 OK created sql view model analytics.silver_order_items
 OK created sql table model analytics.gold_revenue_daily .... [CREATE TABLE (3_833 rows)]
 Done. PASS=30 WARN=0 ERROR=0 SKIP=0 TOTAL=30
@@ -762,11 +835,11 @@ docker compose exec trino trino --catalog iceberg --execute "SHOW TABLES FROM an
 
 ## Pipeline có HAI bước tách rời
 
-**`make st-ingest` KHÔNG chạy silver và gold.** Nó chỉ chạy 13 job Spark ghi vào bronze, hết.
+**`make lake-ingest` KHÔNG chạy silver và gold.** Nó chỉ chạy 13 job Spark ghi vào bronze, hết.
 
-```
-make st-ingest  ->  Spark  ->  bronze           (13 lệnh spark-submit)
-make st-dbt     ->  dbt    ->  silver + gold    (1 lệnh dbt build)
+```text
+make lake-ingest  ->  Spark  ->  bronze           (13 lệnh spark-submit)
+make lake-dbt     ->  dbt    ->  silver + gold    (1 lệnh dbt build)
 ```
 
 Hai công cụ khác nhau, hai container khác nhau, hai lệnh khác nhau. Không có gì tự động nối
@@ -780,7 +853,7 @@ Vì **silver là view, gold là table**:
 SELECT table_name, table_type FROM information_schema.tables WHERE table_schema='analytics';
 ```
 
-```
+```text
 silver_orders       VIEW
 silver_customers    VIEW
 dim_promotion       BASE TABLE
@@ -793,19 +866,19 @@ gold_revenue_daily  BASE TABLE
 _is_valid` **ngay lúc đó**, nên nó luôn phản ánh bronze mới nhất.
 
 **Table thì chứa dữ liệu thật**, là kết quả đã tính sẵn từ lần `dbt build` gần nhất. Bronze
-đổi thì table **không biết** — vẫn giữ số cũ cho tới khi bạn chạy `make st-dbt`.
+đổi thì table **không biết** — vẫn giữ số cũ cho tới khi bạn chạy `make lake-dbt`.
 
 ### Thí nghiệm chứng minh
 
 Tạm bớt `promotions.csv` từ 50 xuống 45 dòng, **chỉ chạy ingest, không chạy dbt**:
 
 | Bảng | Loại | Số dòng | Nhận xét |
-|---|---|---:|---|
+| --- | --- | ---: | --- |
 | `bronze.promotions` | table | 45 | Spark vừa ghi |
 | `silver_promotions` | **VIEW** | **45** | ✅ đúng ngay, không cần build |
 | `dim_promotion` | **TABLE** | **51** | ❌ **dữ liệu cũ** (50 + NO_PROMO) |
 
-Sau khi chạy `make st-dbt`, `dim_promotion` mới thành 46 (45 + NO_PROMO).
+Sau khi chạy `make lake-dbt`, `dim_promotion` mới thành 46 (45 + NO_PROMO).
 
 Quy tắc này khai báo ở `dbt_project.yml`:
 
@@ -818,18 +891,18 @@ models:
       +materialized: table   # đắt, tính 1 lần, PHẢI build lại
 ```
 
-> **Đây là loại lỗi im lặng nguy hiểm:** sau `make st-ingest` mà quên `make st-dbt`, silver đúng
+> **Đây là loại lỗi im lặng nguy hiểm:** sau `make lake-ingest` mà quên `make lake-dbt`, silver đúng
 > nhưng gold sai — và gold mới là thứ bạn làm report. Không có báo lỗi nào, chỉ có số cũ.
 > **Nhớ: ingest xong luôn dbt.**
 
 ### Chạy lại cái gì, khi nào
 
 | Bạn vừa sửa gì | Chạy lệnh |
-|---|---|
-| File `.sql` / `.yml` trong `dbt/` | `make st-dbt` |
-| Job Spark trong `spark/jobs/` hoặc file CSV | `make st-ingest-<bảng>` **rồi** `make st-dbt` |
-| Dựng lại từ đầu sau `make st-clean` | `make st-up` → `make st-ingest` → `make st-dbt` |
-| Không sửa gì, chỉ muốn xem dữ liệu | không cần chạy gì — `make st-trino` |
+| --- | --- |
+| File `.sql` / `.yml` trong `dbt/` | `make lake-dbt` |
+| Job Spark trong `ingestion/` hoặc file CSV | `make lake-ingest-<bảng>` **rồi** `make lake-dbt` |
+| Dựng lại từ đầu sau `make lake-clean` | `make lake-up` → `make lake-ingest` → `make lake-dbt` |
+| Không sửa gì, chỉ muốn xem dữ liệu | không cần chạy gì — `make lake-trino` |
 
 ### Thí nghiệm này còn lộ ra 2 điều
 
@@ -846,13 +919,13 @@ có **14.538 dòng** trỏ tới `promo_key` không còn tồn tại trong `dim_
 
 ## Chạy lại job — ghi đè, snapshot, time travel
 
-**Chạy `make st-ingest` hai lần có nhân đôi dữ liệu không? Không.** Job ghi đè toàn bộ bảng, nên
+**Chạy `make lake-ingest` hai lần có nhân đôi dữ liệu không? Không.** Job ghi đè toàn bộ bảng, nên
 chạy bao nhiêu lần cũng ra kết quả y hệt. Bạn có thể vô tư ingest lại khi nghi ngờ dữ liệu.
 
 Thí nghiệm thật trên `bronze.promotions` (50 dòng), chạy `ingest-promotions` hai lần:
 
 | | Số dòng | `_ingested_at` | Số snapshot |
-|---|---:|---|---:|
+| --- | ---: | --- | ---: |
 | Sau lần 1 | 50 | 07:41:22 | 1 |
 | Sau lần 2 | **50** (không phải 100) | **08:00:38** | **2** |
 
@@ -861,7 +934,7 @@ lại. Nhưng **số snapshot tăng lên 2** — đó là phần đáng biết.
 
 ### Vì sao idempotent: createOrReplace
 
-Nằm ở `spark/jobs/common/iceberg.py`:
+Nằm ở `ingestion/common/iceberg.py`:
 
 ```python
 writer.tableProperty("format-version", "2").createOrReplace()
@@ -880,7 +953,7 @@ SELECT snapshot_id, committed_at, operation, summary['total-records'] AS so_dong
 FROM bronze."promotions$snapshots" ORDER BY committed_at;
 ```
 
-```
+```text
 9057656408815972620 | 2026-07-17 07:41:24 | overwrite | 50
 3885891985372690357 | 2026-07-17 08:00:41 | overwrite | 50
 ```
@@ -902,12 +975,12 @@ vĩnh viễn — và đây chính là lý do ghi đè toàn bộ mà vẫn an to
 Snapshot cũ còn đọc được nghĩa là **file dữ liệu cũ vẫn chiếm chỗ**, không tự xoá.
 
 | Bảng | Kích thước | Chạy lại 10 lần tốn |
-|---|---:|---:|
+| --- | ---: | ---: |
 | `promotions` | 5 KB | ~50 KB — không đáng kể |
 | `orders` | 44 MB | **~440 MB** |
 
 Bảng chỉ hiển thị một phiên bản, nhưng đĩa thì giữ tất cả. Với dataset học tập, cách dọn đơn
-giản nhất là `make st-clean` (xoá sạch volume MinIO) rồi ingest lại. Iceberg cũng có thủ tục
+giản nhất là `make lake-clean` (xoá sạch volume MinIO) rồi ingest lại. Iceberg cũng có thủ tục
 `expire_snapshots` để xoá snapshot cũ hơn một mốc thời gian, nhưng ở quy mô này thì chưa cần.
 
 ### Cảnh báo: điều này KHÔNG đúng với append
@@ -916,7 +989,7 @@ Nếu sau này bạn đổi sang **incremental** — nạp thêm dữ liệu m�
 idempotent biến mất:
 
 | Cách ghi | Chạy lại lần 2 | An toàn? |
-|---|---|---|
+| --- | --- | --- |
 | `createOrReplace()` (hiện tại) | Thay toàn bộ → vẫn 50 dòng | ✅ |
 | `append()` | Cộng thêm → **100 dòng** | ❌ nhân đôi |
 | `MERGE INTO` theo khoá | Cập nhật dòng trùng, thêm dòng mới | ✅ |
@@ -931,9 +1004,9 @@ thi, lúc đó phải chuyển sang `MERGE INTO` và tự lo chuyện idempotent
 
 **Tên bảng luôn có 3 cấp: `catalog.schema.table`.**
 
-- **catalog** (`iceberg`) — kết nối tới kho dữ liệu, khai báo ở `trino/etc/catalog/iceberg.properties`.
+- **catalog** (`iceberg`) — kết nối tới kho dữ liệu, khai báo ở `engine-runners/trino-runner/catalog/iceberg.properties`.
 - **schema** — bronze nằm ở `bronze`; **cả silver lẫn gold đều ở `analytics`**, vì dbt build
-  mọi model vào schema khai báo trong `dbt/profiles.yml`. Tên `silver_`/`gold_` là *tiền tố
+  mọi model vào schema khai báo trong `transforms/profiles.yml`. Tên `silver_`/`gold_` là *tiền tố
   quy ước*, không phải schema riêng.
 
 ### Cách 1 — Trino CLI (dùng nhiều nhất)
@@ -961,7 +1034,7 @@ hoạt động.
 ### Cách 3 — Spark SQL
 
 ```bash
-make st-spark-sql
+make lake-spark-sql
 ```
 
 **Khi nào dùng Spark thay vì Trino?** Gần như không, cho việc query khám phá — Trino nhanh hơn
@@ -1004,19 +1077,19 @@ WHERE o.order_id IS NULL;
 ## Lỗi hay gặp
 
 | Triệu chứng | Nguyên nhân | Cách sửa |
-|---|---|---|
-| `Table 'bronze.x' does not exist` khi chạy dbt | Chưa chạy job Spark, hoặc `schema:` ở `_sources.yml` không khớp `NAMESPACE` | Chạy `make st-ingest-<bảng>`; đối chiếu hai chỗ khai báo |
+| --- | --- | --- |
+| `Table 'bronze.x' does not exist` khi chạy dbt | Chưa chạy job Spark, hoặc `schema:` ở `_sources.yml` không khớp `NAMESPACE` | Chạy `make lake-ingest-<bảng>`; đối chiếu hai chỗ khai báo |
 | `Compilation Error: source 'bronze.x' not found` | Thiếu mục trong `_sources.yml` | Thêm vào bước 3 |
-| `Compilation Error: macro accepted_range not found` | Chưa cài package | `make st-dbt-deps` |
+| `Compilation Error: macro accepted_range not found` | Chưa cài package | `make lake-dbt-deps` |
 | Test `unique` fail trên bảng fact | Cột không phải khoá chính (một đơn nhiều dòng hàng) | Bỏ test `unique`, giữ `not_null` |
 | Job Spark OOM lúc ghi | Partition quá mịn → hàng nghìn file tí hon | Đổi `F.days()` sang `F.months()`, xem [Chọn partition](#chọn-partition) |
 | `SparkContext should only be created...` | Đặt `F.months()`/`F.bucket()` ở cấp module | Bọc trong hàm `partition_columns()` |
-| `make st-ingest` không chạy gì, báo "up to date" | Target thiếu trong `.PHONY`, Make tưởng là tên file | Thêm target vào `.PHONY` |
+| `make lake-ingest` không chạy gì, báo "up to date" | Target thiếu trong `.PHONY`, Make tưởng là tên file | Thêm target vào `.PHONY` |
 | `missing separator` trong Makefile | Thụt dòng bằng space | Thay bằng Tab |
 | Model dbt không được build | File `.sql` sai thư mục | Đặt trong `models/silver/` hoặc `models/gold/` |
-| MinIO phình to dù số dòng không đổi | Mỗi lần ingest lại tạo snapshot mới, file cũ không tự xoá | `make st-clean` rồi ingest lại — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) |
+| MinIO phình to dù số dòng không đổi | Mỗi lần ingest lại tạo snapshot mới, file cũ không tự xoá | `make lake-clean` rồi ingest lại — xem [Chạy lại job](#chạy-lại-job--ghi-đè-snapshot-time-travel) |
 | Ingest ra **0 dòng**, log báo `All paths were ignored` | Tên file bắt đầu bằng `_` hoặc `.` — Spark coi là metadata ẩn | Đổi tên file, bỏ tiền tố |
-| Gold vẫn ra số cũ sau khi ingest | Gold là `table`, không tự cập nhật như silver (`view`) | Chạy `make st-dbt` — xem [Pipeline hai bước](#pipeline-có-hai-bước-tách-rời) |
+| Gold vẫn ra số cũ sau khi ingest | Gold là `table`, không tự cập nhật như silver (`view`) | Chạy `make lake-dbt` — xem [Pipeline hai bước](#pipeline-có-hai-bước-tách-rời) |
 | Ingest lại xong số dòng nhân đôi | Đã đổi sang `append()` thay vì `createOrReplace()` | Dùng `MERGE INTO` hoặc quay lại ghi đè |
 | `revenue` ra `NULL` | `NULL` lây qua phép tính | `coalesce(cột, 0)` trước khi tính |
 | Số đơn ở gold lớn bất thường | Dùng `count(*)` sau join thay vì `count(distinct order_id)` | Xem [Bước 5](#bước-5--model-gold) |

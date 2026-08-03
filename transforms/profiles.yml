@@ -1,0 +1,30 @@
+# Kết nối của dbt. Mọi giá trị lấy từ .env qua env_var() — ĐỪNG hardcode ở đây.
+# Giá trị thứ hai của env_var() chỉ là fallback khi chạy dbt ngoài container.
+hdh_dbt:
+  # Mặc định chạy môi trường nhẹ DuckDB. Môi trường lakehouse chọn bằng --target trino
+  # (Makefile đã set sẵn cho từng stack).
+  target: duckdb
+  outputs:
+
+    # ---- Môi trường 1: DuckDB (nhẹ) — bronze+silver+gold chạy trọn trong 1 file .duckdb ----
+    duckdb:
+      type: duckdb
+      # File warehouse nằm trên named volume nên giữ lại giữa các lần chạy.
+      # Xem infra/local/compose.duckdb.yml
+      path: "{{ env_var('DUCKDB_PATH', '/warehouse/hdh.duckdb') }}"
+      # silver/gold vào schema analytics; bronze vào schema bronze (đặt ở dbt_project.yml)
+      schema: "{{ env_var('ANALYTICS_SCHEMA', 'analytics') }}"
+      threads: 4
+
+    # ---- Môi trường 2: Trino (lakehouse) — silver/gold qua Trino trên Iceberg ----
+    trino:
+      type: trino
+      method: none            # Trino chạy không auth trong môi trường học
+      user: "{{ env_var('TRINO_USER', 'admin') }}"
+      host: "{{ env_var('TRINO_HOST', 'trino') }}"
+      port: "{{ env_var('TRINO_PORT', '8080') | int }}"
+      # database = tên catalog của Trino, phải khớp ICEBERG_CATALOG_NAME
+      database: "{{ env_var('ICEBERG_CATALOG_NAME', 'iceberg') }}"
+      schema: "{{ env_var('ANALYTICS_SCHEMA', 'analytics') }}"
+      threads: 4
+      http_scheme: http

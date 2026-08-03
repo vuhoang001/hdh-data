@@ -1,0 +1,198 @@
+# Giữ nguyên tên project cũ: đổi tên sẽ làm docker coi các named volume hiện có
+# (minio-data, iceberg-catalog-db) là của project khác -> mất sạch dữ liệu đã ingest.
+name: hdh-spark-trino
+
+# ---------------------------------------------------------------------------
+# Môi trường LAKEHOUSE (local):  MinIO -> Iceberg REST -> Spark -> Trino -> dbt
+#
+#   minio            object storage (S3) chứa file dữ liệu Iceberg
+#   minio-init       tạo bucket warehouse rồi thoát
+#   iceberg-postgres metastore lưu danh sách namespace/bảng của catalog
+#   iceberg-rest     REST catalog quản lý metadata bảng Iceberg
+#   trino            engine truy vấn SQL (đọc/ghi Iceberg)
+#   spark            chạy ingest CSV -> bronze (PySpark)
+#   dbt              transform + test silver/gold qua Trino
+#
+# MỌI giá trị cấu hình đến từ .env ở gốc repo. Không hardcode gì trong file này.
+# Đường dẫn tương đối tính từ GỐC REPO vì Makefile chạy với --project-directory .
+# ---------------------------------------------------------------------------
+
+# ---- Khối env dùng lại (YAML anchor) — khai báo một lần, gắn vào nhiều service ----
+x-s3-env: &s3-env
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_REGION: ${AWS_REGION}
+  S3_ENDPOINT: ${S3_ENDPOINT}
+  WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+
+x-iceberg-env: &iceberg-env
+  ICEBERG_CATALOG_NAME: ${ICEBERG_CATALOG_NAME}
+  ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+  BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
+
+services:
+  # ----------------------- Object storage (S3) -----------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: hdh-minio
+    ports:
+      - "${MINIO_API_PORT}:9000"       # S3 API
+      - "${MINIO_CONSOLE_PORT}:9001"   # Web console -> http://localhost:9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DOMAIN: minio
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [hdh]
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: hdh-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+    entrypoint: ["/bin/sh", "/scripts/init-buckets.sh"]
+    volumes:
+      - ./infra/local/minio:/scripts:ro
+    networks: [hdh]
+
+  # ----------------------- Metastore DB cho Iceberg catalog ----------------
+  # Nơi catalog lưu danh sách namespace/bảng và con trỏ tới metadata file trên MinIO.
+  iceberg-postgres:
+    image: postgres:16-alpine
+    container_name: hdh-iceberg-postgres
+    environment:
+      POSTGRES_DB: ${CATALOG_DB_NAME}
+      POSTGRES_USER: ${CATALOG_DB_USER}
+      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
+    volumes:
+      - iceberg-catalog-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CATALOG_DB_USER} -d ${CATALOG_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [hdh]
+
+  # ----------------------- Iceberg REST catalog ----------------------------
+  iceberg-rest:
+    build:
+      context: ./infra/local/iceberg-rest
+      args:
+        ICEBERG_VERSION: ${ICEBERG_VERSION}
+        POSTGRES_JDBC_VERSION: ${POSTGRES_JDBC_VERSION}
+    image: hdh-iceberg-rest:${ICEBERG_VERSION}
+    container_name: hdh-iceberg-rest
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      iceberg-postgres:
+        condition: service_healthy
+    ports:
+      - "${ICEBERG_REST_PORT}:8181"
+    environment:
+      <<: *s3-env
+      CATALOG_WAREHOUSE: s3://${WAREHOUSE_BUCKET}/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: ${S3_ENDPOINT}
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      # Mặc định của image là jdbc:sqlite::memory: -> DB sống theo từng connection,
+      # pool đóng connection là mất sạch bảng đã tạo. Dùng Postgres làm metastore thật.
+      CATALOG_URI: jdbc:postgresql://iceberg-postgres:5432/${CATALOG_DB_NAME}
+      CATALOG_JDBC_USER: ${CATALOG_DB_USER}
+      CATALOG_JDBC_PASSWORD: ${CATALOG_DB_PASSWORD}
+    networks: [hdh]
+
+  # ----------------------- Trino (SQL query engine) ------------------------
+  trino:
+    image: trinodb/trino:latest
+    container_name: hdh-trino
+    depends_on:
+      - iceberg-rest
+    ports:
+      - "${TRINO_PORT}:8080"   # Trino UI / JDBC -> http://localhost:8080
+    environment:
+      # catalog/iceberg.properties đọc các biến này bằng cú pháp ${ENV:...}
+      <<: [*s3-env, *iceberg-env]
+    volumes:
+      - ./engine-runners/trino-runner/catalog:/etc/trino/catalog:ro
+    networks: [hdh]
+
+  # ----------------------- Spark (ingest engine) ---------------------------
+  spark:
+    build:
+      context: ./engine-runners/spark-runner
+      args:
+        SPARK_BASE_IMAGE: ${SPARK_BASE_IMAGE}
+        ICEBERG_VERSION: ${ICEBERG_VERSION}
+    image: hdh-spark:${ICEBERG_VERSION}
+    container_name: hdh-spark
+    depends_on:
+      - iceberg-rest
+    environment:
+      # entrypoint nội suy spark-defaults.conf.tmpl từ các biến này
+      <<: [*s3-env, *iceberg-env]
+      SPARK_CONF_TEMPLATE: /opt/spark/conf-template/spark-defaults.conf.tmpl
+      SPARK_DATA_DIR: ${SPARK_DATA_DIR}
+      # spark-submit chỉ add thư mục chứa script vào sys.path (vd connectors/),
+      # nên phải trỏ thêm vào gốc ingestion/ để "from common import ..." thấy package
+      PYTHONPATH: ${SPARK_JOBS_DIR}
+    volumes:
+      - ./ingestion:${SPARK_JOBS_DIR}:ro
+      - ./engine-runners/spark-runner:/opt/spark/conf-template:ro
+      - ./data:${SPARK_DATA_DIR}:ro
+    # Giữ container sống để exec spark-submit vào
+    command: ["tail", "-f", "/dev/null"]
+    networks: [hdh]
+
+  # ----------------------- dbt (transform + test qua Trino) ----------------
+  dbt:
+    build:
+      context: ./engine-runners/dbt-runner
+      args:
+        DBT_CORE_VERSION: ${DBT_CORE_VERSION}
+        DBT_DUCKDB_VERSION: ${DBT_DUCKDB_VERSION}
+        DBT_TRINO_VERSION: ${DBT_TRINO_VERSION}
+        DBT_PROJECT_DIR: ${DBT_PROJECT_DIR}
+    image: hdh-dbt:${DBT_CORE_VERSION}
+    container_name: hdh-dbt
+    depends_on:
+      - trino
+    # Chạy bằng UID của user host, KHÔNG root — nếu không, target/, logs/, dbt_packages/
+    # và package-lock.yml sinh ra trên bind mount sẽ thuộc root và IDE không sửa được.
+    user: "${DOCKER_USER:-1000:1000}"
+    environment:
+      # profiles.yml + dbt_project.yml đọc các biến này bằng env_var()
+      TRINO_HOST: ${TRINO_HOST}
+      TRINO_PORT: 8080          # cổng trong network, không phải cổng map ra host
+      TRINO_USER: ${TRINO_USER}
+      ICEBERG_CATALOG_NAME: ${ICEBERG_CATALOG_NAME}
+      ANALYTICS_SCHEMA: ${ANALYTICS_SCHEMA}
+      BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
+    volumes:
+      # profiles.yml nằm sẵn trong transforms/ và image trỏ DBT_PROFILES_DIR vào đó,
+      # nên không cần mount riêng vào /root/.dbt nữa.
+      - ./transforms:${DBT_PROJECT_DIR}
+    working_dir: ${DBT_PROJECT_DIR}
+    command: ["tail", "-f", "/dev/null"]
+    networks: [hdh]
+
+volumes:
+  minio-data:
+  iceberg-catalog-db:
+
+networks:
+  hdh:
+    name: hdh-net

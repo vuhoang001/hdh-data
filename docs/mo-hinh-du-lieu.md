@@ -95,7 +95,7 @@ Phân loại này quyết định cách bạn join và cách bạn partition.
 Có nhiều dòng, gắn với thời điểm, và **khoá không unique** (trừ `orders`/`payments`).
 
 | Bảng | Dòng | Hạt (grain) — mỗi dòng là gì |
-|---|---:|---|
+| --- | ---: | --- |
 | `orders` | 646,945 | một đơn hàng |
 | `order_items` | 714,669 | một **dòng hàng** trong đơn |
 | `payments` | 646,945 | một lần thanh toán |
@@ -119,7 +119,7 @@ Hệ quả trực tiếp: [join `returns` với `order_items` phải gộp trư�
 ### Dimension — mô tả thuộc tính, ít đổi
 
 | Bảng | Dòng | Khoá |
-|---|---:|---|
+| --- | ---: | --- |
 | `customers` | 121,930 | `customer_id` |
 | `geography` | 39,948 | `zip` |
 | `products` | 2,412 | `product_id` |
@@ -128,7 +128,7 @@ Hệ quả trực tiếp: [join `returns` với `order_items` phải gộp trư�
 ### Độc lập — không có khoá ngoại
 
 | Bảng | Dòng | Ghi chú |
-|---|---:|---|
+| --- | ---: | --- |
 | `sales_daily` | 3,833 | doanh thu ngày tổng hợp sẵn |
 | `web_traffic` | 3,652 | lưu lượng web theo ngày |
 
@@ -161,7 +161,7 @@ join với `orders` — đó chính là điều `gold_revenue_daily` làm.
 `orders.order_status` có 6 giá trị, và nó **quyết định các bảng khác có dòng tương ứng hay không**:
 
 | Trạng thái | Số đơn | Có shipment? |
-|---|---:|---|
+| --- | ---: | --- |
 | `delivered` | 516,716 | có (trừ 524 đơn — xem [bất thường](#bất-thường-đã-phát-hiện)) |
 | `cancelled` | 59,462 | **không** — đơn huỷ thì không gửi hàng |
 | `returned` | 36,142 | có (trừ 29 đơn) |
@@ -177,7 +177,7 @@ join với `orders` — đó chính là điều `gold_revenue_daily` làm.
 `count(*)` cho ra số sai.**
 
 | Từ | Tới | Lực lượng | Kiểm chứng thật |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `orders` | `payments` | **1 : 1** | 646,945 dòng / 646,945 `order_id` distinct — mọi đơn đúng 1 thanh toán |
 | `orders` | `order_items` | **1 : n (n ≥ 1)** | 714,669 dòng / 646,945 distinct — **mọi đơn đều có ít nhất 1 dòng hàng**, trung bình 1.10 |
 | `orders` | `shipments` | **1 : 0..1** | 566,067 dòng / 566,067 distinct — 80,878 đơn (12.5%) **không có** shipment |
@@ -208,7 +208,7 @@ Nguồn đã phi chuẩn hoá sẵn ở vài chỗ. **Cả hai trường hợp d
 toàn bộ 646,945 đơn:
 
 | Cột | Trùng với | Kiểm chứng |
-|---|---|---|
+| --- | --- | --- |
 | `orders.zip` | `customers.zip` của chính khách đó | 646,945/646,945 khớp, 0 lệch |
 | `orders.payment_method` | `payments.payment_method` của chính đơn đó | 646,945/646,945 khớp, 0 lệch |
 
@@ -247,7 +247,7 @@ không phải thiếu dữ liệu. Job bronze đã quy nó về `NULL`.
 khớp với số tính từ `order_items`**:
 
 | Ngày | `sales_daily.revenue` | Tính từ `order_items` | Lệch |
-|---|---:|---:|---:|
+| --- | ---: | ---: | ---: |
 | 2022-12-31 | 2,383,037.48 | 2,015,982.03 | +367,055 (+18%) |
 
 Cả hai có cùng số dòng (3,833) và cùng khoảng ngày (2012-07-04 → 2022-12-31), nên đây không
@@ -285,7 +285,7 @@ khách lúc đăng ký. Nối chúng lại là so sánh khập khiễng.
 
 ## Trục thời gian
 
-```
+```text
 2012-01   2012-07        2013-01                                    2022-12   2023-01    2024-07
    │         │              │                                          │         │          │
    ├─────────┤              │                                          │         │          │
@@ -322,7 +322,7 @@ Những thứ này **rule chất lượng ở bronze không thể bắt được
 ### 564 đơn đã giao nhưng không có bản ghi shipment
 
 | Trạng thái | Số đơn không có shipment | Có hợp lý không? |
-|---|---:|---|
+| --- | ---: | --- |
 | `cancelled` | 59,462 | ✅ đơn huỷ thì không gửi |
 | `paid` | 13,577 | ✅ đã trả tiền, chưa gửi |
 | `created` | 7,275 | ✅ mới tạo |
@@ -350,7 +350,7 @@ WHERE s.order_id IS NULL AND o.order_status IN ('delivered', 'returned', 'shippe
 206/714,669 dòng hàng (0.03%) có khuyến mãi thứ hai. Mẫu hình **hoàn toàn nhất quán**:
 
 | promo_id (thứ 1) | stackable | promo_id_2 (thứ 2) | stackable | Số dòng |
-|---|---:|---|---:|---:|
+| --- | ---: | --- | ---: | ---: |
 | PROMO-0013 | 1 | PROMO-0015 | 0 | 132 |
 | PROMO-0023 | 1 | PROMO-0025 | 0 | 74 |
 
@@ -473,7 +473,7 @@ GROUP BY p.product_name;
 **Bằng chứng cho việc nhân dòng** — `order_items` gốc có 714,669 dòng:
 
 | Cách join `returns` | Số dòng sau join | Dôi ra |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Chỉ bằng `order_id` | 722,575 | **+7,906** |
 | Bằng `(order_id, product_id)` | 714,673 | +4 |
 | Gộp trước rồi join | 714,669 | 0 ✅ |
@@ -481,7 +481,7 @@ GROUP BY p.product_name;
 ### Ba lỗi join hay gặp nhất
 
 | Lỗi | Hậu quả | Cách tránh |
-|---|---|---|
+| --- | --- | --- |
 | `count(*)` sau khi join `order_items` | Đếm dòng hàng thành số đơn → phóng đại ~10% | `count(distinct order_id)` |
 | `join` thay vì `left join` với `shipments` | Mất 80,878 đơn (12.5%) | `left join` khi phía kia là 0..1 |
 | Join `returns` với `order_items` trực tiếp | Nhân dòng ở cả hai phía | Gộp mỗi phía về đúng hạt trước khi join |

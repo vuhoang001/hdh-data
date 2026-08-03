@@ -1,0 +1,32 @@
+name: hdh_dbt
+version: "1.0.0"
+config-version: 2
+
+# Kết nối nằm ở config/dbt/profiles.yml (compose mount vào /root/.dbt/profiles.yml)
+profile: hdh_dbt
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Thư mục chứa CSV nguồn, nhìn từ bên trong container. Giá trị đến từ .env (DBT_DATA_DIR).
+  # Chỉ dùng ở target duckdb (bronze đọc CSV trực tiếp). Ở target trino, bronze do Spark ghi
+  # Iceberg nên var này không được dùng.
+  data_dir: "{{ env_var('DBT_DATA_DIR', '/data') }}"
+
+models:
+  hdh_dbt:
+    # bronze: CHỈ build ở target duckdb (đọc CSV, làm việc của Spark). Ở target trino, bronze
+    #   do Spark ghi Iceberg và dbt đọc qua source -> tắt để dbt không cố build lại.
+    # silver -> view (chỉ lọc/đổi tên, rẻ), gold -> table (group by/join đắt, tính 1 lần).
+    bronze:
+      +enabled: "{{ target.type == 'duckdb' }}"
+      +materialized: table
+      # Cùng tên namespace Spark ghi vào ở môi trường lakehouse -> query giống nhau ở cả hai
+      +schema: "{{ env_var('BRONZE_NAMESPACE', 'bronze') }}"
+    silver:
+      +materialized: view
+    gold:
+      +materialized: table

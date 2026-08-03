@@ -15,7 +15,7 @@ suông — mỗi khái niệm đều được **giải thích bằng chính dữ
 Năm khái niệm cốt lõi. Đọc theo thứ tự này nếu mới bắt đầu.
 
 | # | Chủ đề | Trả lời câu hỏi | Mức | Trạng thái |
-|---|--------|-----------------|-----|-----------|
+| --- | --- | --- | --- | --- |
 | 1 | [Hạt (grain)](star-schema.md#hạt--quyết-định-quan-trọng-nhất) | "Một dòng nghĩa là **gì**" — quyết định quan trọng nhất | Cơ bản | ✅ Đã kiểm chứng |
 | 2 | [Fact và Dimension](star-schema.md#star-schema-là-gì-và-giải-quyết-vấn-đề-gì) | Hai loại bảng; "fact là động từ, dimension là trạng từ" | Cơ bản | ✅ Đã kiểm chứng |
 | 3 | [Natural key hay Surrogate key](star-schema-ly-thuyet.md#khoá-natural-hay-surrogate) | Vì sao Kimball khuyên surrogate — và vì sao repo này *không* dùng | Trung cấp | ✅ Đã kiểm chứng |
@@ -29,7 +29,7 @@ Năm khái niệm cốt lõi. Đọc theo thứ tự này nếu mới bắt đ�
 Xây trên nền tảng. Đây là chỗ lý thuyết gặp dữ liệu thật và đôi khi **chọn ngược sách** — có lý do.
 
 | # | Chủ đề | Trả lời câu hỏi | Mức | Trạng thái |
-|---|--------|-----------------|-----|-----------|
+| --- | --- | --- | --- | --- |
 | 1 | [Lực lượng quan hệ (cardinality)](mo-hinh-du-lieu.md#lực-lượng-quan-hệ-cardinality) | Khi nào `join`, khi nào `left join`, khi nào `count(*)` cho số sai | Trung cấp | ✅ Đã kiểm chứng |
 | 2 | [Bốn loại bảng fact](star-schema-ly-thuyet.md#bốn-loại-bảng-fact) | Transaction / snapshot / accumulating / factless — chọn sai là sai từ gốc | Trung cấp | ✅ Đã kiểm chứng |
 | 3 | [Ba loại số đo](star-schema-ly-thuyet.md#ba-loại-số-đo) | Số nào `sum()` được, số nào không (additive / semi / non) | Trung cấp | ✅ Đã kiểm chứng |
@@ -43,7 +43,7 @@ Xây trên nền tảng. Đây là chỗ lý thuyết gặp dữ liệu thật v
 ## Hướng dẫn thực hành (Tutorials)
 
 | Chủ đề | Nội dung | Trạng thái |
-|--------|----------|-----------|
+| --- | --- | --- |
 | [Thêm một bảng mới vào pipeline](them-bang-moi.md) | Đi hết chặng CSV → bronze → silver → gold, dùng `order_items` làm ví dụ | ✅ Đã kiểm chứng |
 | [Star schema — thiết kế hiện tại](star-schema.md) | `models/gold/` có gì, mỗi quyết định vì sao chọn thế | ✅ Đã kiểm chứng |
 
@@ -52,7 +52,7 @@ Xây trên nền tảng. Đây là chỗ lý thuyết gặp dữ liệu thật v
 ## Tra nhanh (Cheatsheets)
 
 | Chủ đề | Nội dung |
-|--------|----------|
+| --- | --- |
 | [Công thức join](mo-hinh-du-lieu.md#công-thức-join) | Doanh thu theo ngày / category / vùng, tỷ lệ giao hàng, tỷ lệ trả hàng |
 | [Ba lỗi join hay gặp nhất](mo-hinh-du-lieu.md#ba-lỗi-join-hay-gặp-nhất) | `count(*)` sau join · `join` thay `left join` · join sai hạt |
 | [Những sai lầm kinh điển](star-schema-ly-thuyet.md#những-sai-lầm-kinh-điển) | 8 sai lầm thiết kế, kèm bằng chứng trong repo |
@@ -65,7 +65,7 @@ Xây trên nền tảng. Đây là chỗ lý thuyết gặp dữ liệu thật v
 Mỗi kỹ thuật ở trên đều có ít nhất một tình huống thật trong dữ liệu này:
 
 | Tình huống | Kỹ thuật liên quan | Ở đâu |
-|-----------|--------------------|-------|
+| --- | --- | --- |
 | Query sai hạt "phát hiện" 3 vi phạm ảo | Hạt (grain) | [Một bài học về chính tài liệu này](mo-hinh-du-lieu.md#một-bài-học-về-chính-tài-liệu-này) |
 | 564 đơn đã giao mà không có shipment | Kiểm chứng chéo | [Bất thường đã phát hiện](mo-hinh-du-lieu.md#bất-thường-đã-phát-hiện) |
 | `promo_id_2` dễ bị gắn cờ lỗi oan | Rule chất lượng | [promo_id_2 — không phải lỗi](mo-hinh-du-lieu.md#promo_id_2--không-phải-lỗi-nhưng-dễ-hiểu-nhầm) |
@@ -76,7 +76,7 @@ Mỗi kỹ thuật ở trên đều có ít nhất một tình huống thật tr
 
 ## Lộ trình học
 
-```
+```text
 SQL (join, group by)
         ↓
 Hạt (grain) ← bắt đầu ở đây

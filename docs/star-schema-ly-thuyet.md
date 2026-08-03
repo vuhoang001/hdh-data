@@ -81,7 +81,7 @@ X vào ô nào dùng được.
 Bus matrix cho dữ liệu của repo này:
 
 | Quy trình nghiệp vụ | dim_date | dim_customer | dim_product | dim_promotion | Trạng thái |
-|---|:---:|:---:|:---:|:---:|---|
+| --- | :---: | :---: | :---: | :---: | --- |
 | **Đặt hàng** (`fact_order_items`) | X | X | X | X | ✅ đã làm |
 | **Thanh toán** (`payments`) | X | X | | | ⬜ |
 | **Giao hàng** (`shipments`) | X | X | | | ⬜ |
@@ -138,7 +138,7 @@ Một dòng cho **một thực thể đi qua nhiều mốc**, và dòng đó **�
 - **Hạt:** một đơn hàng
 - **Cột đặc trưng:** nhiều cột ngày trên cùng một dòng
 
-```
+```text
 order_date -> ship_date -> delivery_date
 ```
 
@@ -193,7 +193,7 @@ loại tốt nhất và là lý do star schema hoạt động** — mọi report
 `inventory.stock_on_hand` là ví dụ chuẩn.
 
 | Cộng theo | Có nghĩa không? |
-|---|---|
+| --- | --- |
 | Sản phẩm (tồn của A + tồn của B trong tháng 3) | ✅ tổng tồn kho tháng 3 |
 | **Thời gian** (tồn tháng 1 + tồn tháng 2) | ❌ **vô nghĩa** |
 
@@ -276,7 +276,7 @@ Một bảng vật lý, ba alias. Nhờ đó hỏi được "đơn đặt cuối
 ### 5. Degenerate vs Junk vs Role-playing — phân biệt nhanh
 
 | Loại | Đặc điểm | Ví dụ |
-|---|---|---|
+| --- | --- | --- |
 | Degenerate | Khoá ở lại fact, không có bảng dim | `order_id` |
 | Junk | Gom nhiều cột ít giá trị vào 1 dim | `order_status` + `payment_method` + ... |
 | Role-playing | 1 bảng dim, nhiều vai trong 1 fact | `dim_date` cho order/ship/delivery |
@@ -288,7 +288,7 @@ Một bảng vật lý, ba alias. Nhờ đó hỏi được "đơn đặt cuối
 **Slowly Changing Dimension**: khách chuyển nhà, sản phẩm đổi category. Xử lý sao?
 
 | Type | Cách làm | Hậu quả |
-|---|---|---|
+| --- | --- | --- |
 | **Type 0** | Không bao giờ đổi | Dùng cho thứ bất biến: ngày sinh, `signup_date` |
 | **Type 1** | **Ghi đè**, mất lịch sử | Báo cáo lịch sử **đổi theo** giá trị mới |
 | **Type 2** | **Thêm dòng mới**, giữ dòng cũ + `valid_from`/`valid_to` | Báo cáo lịch sử **giữ nguyên** — chuẩn nhất |
@@ -316,7 +316,7 @@ Khách chuyển từ vùng `east` sang `west` → mọi đơn cũ của họ **b
 Điều thú vị: **nguồn `orders.zip` ĐÃ giữ địa chỉ lịch sử của từng đơn**. Nên bạn có hai lựa chọn:
 
 | Câu hỏi | Dùng |
-|---|---|
+| --- | --- |
 | "Đơn này được giao tới vùng nào" (lịch sử đúng) | `orders.zip` → `geography` |
 | "Khách này hiện ở vùng nào" (trạng thái hiện tại) | `dim_customer.region` |
 
@@ -333,7 +333,7 @@ snowflake: `customers → geography`.
 **Star** = làm phẳng hết vào dimension.
 
 | | Snowflake | Star |
-|---|---|---|
+| --- | --- | --- |
 | Lưu trữ | Gọn (40k zip lưu 1 lần) | Lặp (122k khách) |
 | Số join cho "doanh thu theo vùng" | 2 | **1** |
 | Dễ hiểu với người dùng | Khó | **Dễ** |
@@ -360,7 +360,7 @@ khuyến mãi** (`promo_id` và `promo_id_2`).
 Ba cách xử lý:
 
 | Cách | Làm sao | Khi nào dùng |
-|---|---|---|
+| --- | --- | --- |
 | **Bỏ qua** | Chỉ giữ cái đầu tiên | Tỷ lệ nhiều-nhiều rất nhỏ |
 | **Cột riêng** | `promo_key`, `promo_key_2` | Số lượng tối đa cố định và nhỏ |
 | **Bridge table** | Bảng trung gian `line × promo` | Đúng nhất, nhưng phức tạp |
@@ -373,7 +373,7 @@ bridge table cho 0,03% là đổi rất nhiều phức tạp lấy rất ít ch�
 
 **Bridge table trông thế nào** (nếu sau này cần):
 
-```
+```text
 bridge_line_promo: (order_id, product_id, promo_id)
 ```
 
@@ -418,7 +418,7 @@ natural key sụp đổ.
 ## Những sai lầm kinh điển
 
 | Sai lầm | Vì sao sai | Bằng chứng trong repo |
-|---|---|---|
+| --- | --- | --- |
 | **Chọn hạt quá thô** | Không tách nhỏ ra được sau này | Chọn "dòng hàng" nên vẫn dựng được `gold_revenue_daily` theo ngày |
 | **`count(*)` sau khi join fact** | Đếm dòng hàng thành số đơn | Phải `count(distinct order_id)` |
 | **Khoá ngoại NULL trong fact** | `join` âm thầm vứt dòng | Để `promo_id` NULL → inner join mất **438.353 dòng (61,3%)** |

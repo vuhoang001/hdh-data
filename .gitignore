@@ -1,8 +1,10 @@
-# dbt
-dbt/hdh_dbt/target/
-dbt/hdh_dbt/dbt_packages/
-dbt/hdh_dbt/logs/
-logs/
+# dbt (artifact sinh ra khi chạy, không commit)
+transforms/target/
+transforms/dbt_packages/
+transforms/logs/
+
+# pytest
+.pytest_cache/
 
 # duckdb (nếu chạy local ngoài container)
 *.duckdb
@@ -11,6 +13,8 @@ logs/
 # python
 __pycache__/
 *.pyc
+.venv/
+venv/
 
 # local
 .DS_Store
