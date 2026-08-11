@@ -3,8 +3,8 @@
 
 Cùng MỘT file SQL được hai engine chạy:
 
-    dbt-duckdb : dbt render Jinja  -> bronze_source() nở thành read_csv(...)
-    Spark      : module này render -> bronze_source() thay bằng tên temp view
+    DuckDB (dev)  : bronze_source() thay bằng view đọc landing Parquet
+    Spark  (prod) : bronze_source() thay bằng temp view đọc landing Parquet
 
 Nhờ vậy logic bronze (schema, chuẩn hoá, luật chất lượng, cột audit) chỉ tồn tại một bản.
 Trước đây nó có hai bản — 13 file .sql và 13 file ingest_*.py — và phải có một test canh
@@ -24,22 +24,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List
 
-# Kiểu TRUNG LẬP hợp lệ. Bản đối xứng cho DuckDB nằm ở transforms/macros/bronze_helpers.sql
-# — thêm kiểu mới phải sửa CẢ HAI.
-#
-# pyspark CỐ Ý không import ở cấp module: module này phải nạp được ở nơi không có Spark
-# (CI lint, pytest) để test kiểm được khuôn model mà không phải cài cả bộ Spark 300MB.
-# Chỉ property .schema mới cần pyspark, và nó import lúc gọi.
-NEUTRAL_TYPES = ("integer", "string", "date", "double")
-
-# Hậu tố '!' đánh dấu cột bắt buộc -> StructField(nullable=False) -> Iceberg `required`.
-REQUIRED_SUFFIX = "!"
-
-
-def base_type(dtype: str) -> str:
-    """Bỏ hậu tố '!' để lấy tên kiểu. Không dùng str.removesuffix vì image Spark
-    (apache/spark:3.5.6-python3) chạy Python 3.8, mà removesuffix cần 3.9+."""
-    return dtype[: -len(REQUIRED_SUFFIX)] if dtype.endswith(REQUIRED_SUFFIX) else dtype
+# Kiểu dữ liệu: bảng map sống ở common/types.py — MỘT nguồn sự thật cho mọi engine.
+from common.types import NEUTRAL_TYPES, REQUIRED_SUFFIX, base_type  # noqa: F401
 
 _SET_SOURCE_FILE = re.compile(r"\{%-?\s*set\s+source_file\s*=\s*'([^']+)'\s*-?%\}")
 _SET_COLUMNS = re.compile(r"\{%-?\s*set\s+columns\s*=\s*(\{[^{}]*\})\s*-?%\}", re.S)
@@ -58,42 +44,17 @@ class BronzeModelError(ValueError):
 
 @dataclass(frozen=True)
 class BronzeModel:
-    """Một model bronze đã đọc xong, chưa gắn tên temp view."""
+    """Một model bronze đã đọc xong, chưa gắn tên quan hệ nguồn.
+
+    CỐ Ý không có property .schema: mỗi engine tự dựng schema theo kiểu của mình từ
+    `columns` (xem engines/*_engine.py). Nếu để ở đây, module này sẽ phải import
+    pyspark và mất khả năng nạp trong môi trường không có Spark.
+    """
 
     table: str
     source_file: str
     columns: Dict[str, str]
     _template: str
-
-    @property
-    def schema(self):
-        """Schema Spark tường minh để đọc nguồn. Spark áp theo THỨ TỰ cột, bỏ qua tên header.
-
-        Import pyspark ở trong hàm, không ở đầu module — xem ghi chú tại NEUTRAL_TYPES.
-        """
-        from pyspark.sql.types import (
-            DateType,
-            DoubleType,
-            IntegerType,
-            StringType,
-            StructField,
-            StructType,
-        )
-
-        spark_types = {
-            "integer": IntegerType,
-            "string": StringType,
-            "date": DateType,
-            "double": DoubleType,
-        }
-        return StructType([
-            StructField(
-                name,
-                spark_types[base_type(dtype)](),
-                not dtype.endswith(REQUIRED_SUFFIX),
-            )
-            for name, dtype in self.columns.items()
-        ])
 
     def render(self, source_view: str) -> str:
         """Sinh SQL chạy được, với quan hệ nguồn trỏ vào `source_view`."""
@@ -130,7 +91,7 @@ def _parse_columns(raw: str, table: str) -> Dict[str, str]:
         raise BronzeModelError(
             f"{table}: kiểu không hỗ trợ {unknown}. Kiểu hợp lệ: {sorted(NEUTRAL_TYPES)} "
             f"(thêm '{REQUIRED_SUFFIX}' vào cuối để đánh dấu cột bắt buộc). "
-            f"Thêm kiểu mới phải sửa CẢ đây VÀ transforms/macros/bronze_helpers.sql."
+            f"Thêm kiểu mới: sửa ingestion/common/types.py."
         )
     return columns
 

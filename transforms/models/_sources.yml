@@ -1,0 +1,153 @@
+version: 2
+
+# =============================================================================
+# HỢP ĐỒNG CỦA TẦNG BRONZE — điểm vào duy nhất của dbt vào dữ liệu.
+#
+# Bronze do TẦNG INGESTION ghi vào Iceberg (ingestion/engines/*), không phải dbt build.
+# Điều này đúng ở CẢ HAI môi trường — đó là thay đổi cốt lõi của lần refactor này:
+#
+#   dev   ingest.py + DuckDBIngestionEngine  ─┐
+#                                             ├─► iceberg.<BRONZE_NAMESPACE>.<bảng>
+#   prod  ingest.py + SparkIngestionEngine   ─┘
+#
+# Trước đây source này bị TẮT ở target duckdb (`enabled: target.type != 'duckdb'`) vì
+# dev không có Iceberg. Điều kiện đó đã biến mất: hai môi trường giờ dùng chung một đồ
+# thị model, không còn nhánh nào rẽ theo target.
+#
+# SEVERITY: mọi test ở đây là `warn`, khai tường minh (source test không cấu hình được
+# theo đường dẫn model trong dbt_project.yml). Lý do giữ nguyên như trước: bronze có
+# nhiệm vụ PHẢN ÁNH TRUNG THỰC nguồn, kể cả khi nguồn bẩn. Để `error` thì mỗi lần nguồn
+# lỗi là cả pipeline đứng, và ta mất luôn khả năng nhìn thấy chính dữ liệu bẩn đó để đi
+# báo bên nguồn. Từ silver trở đi mới là `error` — vì silver đã lọc _is_valid.
+# =============================================================================
+
+sources:
+  - name: bronze
+    # Catalog + namespace lấy từ config/.env.* để không lệch với ingestion và Trino.
+    # Ở dev BRONZE_NAMESPACE=dev_bronze, ở prod là bronze — cùng một khai báo.
+    database: "{{ env_var('ICEBERG_CATALOG_NAME', 'iceberg') }}"
+    schema: "{{ env_var('BRONZE_NAMESPACE', 'bronze') }}"
+
+    # =========================================================================
+    # SOURCE FRESHNESS — chiều TIMELINESS, loại kiểm tra duy nhất không phải "test"
+    #
+    # Chạy bằng lệnh RIÊNG, không nằm trong `dbt test`:
+    #     dbt source freshness
+    #
+    # Nó không đọc nội dung dữ liệu mà hỏi đúng một câu: max(_ingested_at) cách bây giờ
+    # bao lâu? Đây là thứ DUY NHẤT phát hiện được "job ingest chết âm thầm" — khi
+    # ingestion ngừng chạy, mọi test khác vẫn xanh vì dữ liệu cũ hoàn toàn hợp lệ, chỉ
+    # là không còn dữ liệu mới. Không có freshness thì lỗi này chỉ lộ ra khi có người
+    # hỏi "sao báo cáo tuần này giống hệt tuần trước".
+    #
+    # _ingested_at do chính model bronze sinh ra (transforms/bronze/bronze_*.sql).
+    # Ngưỡng đặt ở mức source, bảng con thừa kế; bảng nào nhịp khác thì ghi đè riêng.
+    # =========================================================================
+    config:
+      loaded_at_field: _ingested_at
+      freshness:
+        warn_after: { count: 24, period: hour }
+        error_after: { count: 72, period: hour }
+
+    tables:
+      # ---- Có downstream silver/gold -----------------------------------------
+      - name: orders
+        description: "Đơn hàng bronze: text đã chuẩn hoá, giữ nguyên số dòng nguồn, có cờ chất lượng"
+        columns:
+          - name: order_id
+            data_tests:
+              - not_null: {config: {severity: warn}}
+              - unique: {config: {severity: warn}}
+          - name: _invalid_reason
+            description: "NULL = dòng sạch. Khác NULL = danh sách lý do bị đánh dấu hỏng"
+            data_tests:
+              # NGÂN SÁCH CHẤT LƯỢNG: tối đa 5% số dòng được phép hỏng.
+              # not_null_proportion đo TỈ LỆ chứ không đếm dòng — một bảng 700k dòng có
+              # 100 dòng hỏng là bình thường, nhưng 100 dòng trên bảng 200 dòng là sự cố.
+              # Test đếm tuyệt đối không phân biệt được hai ca đó.
+              - dbt_utils.not_null_proportion:
+                  arguments: {at_least: 0, at_most: 0.05}
+                  config: {severity: warn}
+
+      - name: order_items
+        description: "Dòng hàng bronze: giữ nguyên số dòng nguồn, có cờ chất lượng"
+        columns:
+          - name: order_id
+            data_tests:
+              - not_null: {config: {severity: warn}}
+          - name: product_id
+            data_tests:
+              - not_null: {config: {severity: warn}}
+          - name: _invalid_reason
+            data_tests:
+              - dbt_utils.not_null_proportion:
+                  arguments: {at_least: 0, at_most: 0.05}
+                  config: {severity: warn}
+
+      - name: customers
+        description: "Khách hàng bronze. customer_id là khoá chính (121.930/121.930 unique)"
+        columns:
+          - name: customer_id
+            data_tests:
+              - not_null: {config: {severity: warn}}
+              - unique: {config: {severity: warn}}
+          - name: zip
+            data_tests:
+              - not_null: {config: {severity: warn}}
+
+      - name: geography
+        description: "Tra cứu zip -> city/region/district. zip là khoá chính (39.948 unique)"
+        # Bảng tra cứu địa lý gần như không đổi — ngưỡng 24h của source sẽ báo vàng mỗi
+        # ngày mà không có gì sai. Nới ra 1 tuần: ghi đè freshness ở mức bảng.
+        config:
+          freshness:
+            warn_after: { count: 7, period: day }
+            error_after: { count: 30, period: day }
+        columns:
+          - name: zip
+            data_tests:
+              - not_null: {config: {severity: warn}}
+              - unique: {config: {severity: warn}}
+
+      - name: products
+        description: "Sản phẩm bronze. LƯU Ý: price là giá NIÊM YẾT HIỆN TẠI, không phải giá bán lịch sử"
+        config:
+          freshness:
+            warn_after: { count: 7, period: day }
+            error_after: { count: 30, period: day }
+        columns:
+          - name: product_id
+            data_tests:
+              - not_null: {config: {severity: warn}}
+              - unique: {config: {severity: warn}}
+
+      - name: promotions
+        description: "Chương trình khuyến mãi. applicable_category NULL = áp dụng mọi category"
+        config:
+          freshness:
+            warn_after: { count: 7, period: day }
+            error_after: { count: 30, period: day }
+        columns:
+          - name: promo_id
+            data_tests:
+              - not_null: {config: {severity: warn}}
+              - unique: {config: {severity: warn}}
+
+      # ---- Chưa có downstream: giữ để phân tích và để so sánh dev/prod --------
+      - name: payments
+        description: "Thanh toán bronze (1 đơn 1 dòng). Chưa có downstream"
+      - name: shipments
+        description: "Vận chuyển bronze. delivery_date < ship_date là lỗi dữ liệu chắc chắn"
+      - name: returns
+        description: "Trả hàng bronze. Chưa có downstream"
+      - name: reviews
+        description: "Đánh giá bronze, rating 1-5. Chưa có downstream"
+      - name: inventory
+        description: "Snapshot tồn kho theo tháng. Nguồn đã phi chuẩn hoá sẵn"
+      - name: sales_daily
+        description: >
+          Doanh thu/giá vốn TỔNG HỢP SẴN theo ngày. KHÔNG khớp với doanh thu tính từ
+          order_items — hai nguồn số độc lập, chênh lệch là thứ cần điều tra, đừng
+          "sửa" cho khớp. Cột _margin_negative đánh dấu ngày bán lỗ.
+      - name: web_traffic
+        description: "Lưu lượng web theo ngày + nguồn traffic. Chưa có downstream"

@@ -2,7 +2,6 @@ name: hdh_dbt
 version: "1.0.0"
 config-version: 2
 
-# Kết nối nằm ở config/dbt/profiles.yml (compose mount vào /root/.dbt/profiles.yml)
 profile: hdh_dbt
 
 model-paths: ["models"]
@@ -10,49 +9,54 @@ seed-paths: ["seeds"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
-vars:
-  # Thư mục chứa CSV nguồn, nhìn từ bên trong container. Giá trị đến từ .env (DBT_DATA_DIR).
-  # Chỉ dùng ở target duckdb (bronze đọc CSV trực tiếp). Ở target trino, bronze do Spark ghi
-  # Iceberg nên var này không được dùng.
-  # Fallback ../data là đường dẫn trên host (dbt chạy với cwd = transforms/), chỉ dùng khi
-  # chạy dbt ngoài container vì /data không tồn tại trên host.
-  data_dir: "{{ env_var('DBT_DATA_DIR', '../data') }}"
-
+# =============================================================================
+# MỘT bộ model, HAI execution engine.
+#
+#   dbt build --target dev    -> DuckDB ──► Iceberg ──► MinIO
+#   dbt build --target prod   -> Trino  ──► Iceberg ──► MinIO
+#
+# KHÔNG có `enabled` nào phụ thuộc target ở đây nữa. Trước đây tầng bronze chỉ build ở
+# duckdb (`+enabled: target.type == 'duckdb'`) còn source bronze chỉ bật ở trino — tức
+# hai môi trường có hai đồ thị model khác nhau. Giờ bronze do tầng ingestion ghi vào
+# Iceberg ở CẢ HAI môi trường, nên dbt luôn đọc nó qua source() và đồ thị model giống
+# hệt nhau. Xem models/_sources.yml.
+#
+# Model bronze SQL nằm ở transforms/bronze/ (KHÔNG phải models/): chúng không còn là dbt
+# model mà là đặc tả ingestion, do ingestion/engines/* chạy. Để chúng trong models/ sẽ
+# khiến dbt cố build lại thứ mà tầng ingestion vừa ghi.
+# =============================================================================
 models:
   hdh_dbt:
-    # bronze: CHỈ build ở target duckdb (đọc CSV, làm việc của Spark). Ở target trino, bronze
-    #   do Spark ghi Iceberg và dbt đọc qua source -> tắt để dbt không cố build lại.
-    # silver -> view (chỉ lọc/đổi tên, rẻ), gold -> table (group by/join đắt, tính 1 lần).
-    bronze:
-      +enabled: "{{ target.type == 'duckdb' }}"
-      +materialized: table
-      # Cùng tên namespace Spark ghi vào ở môi trường lakehouse -> query giống nhau ở cả hai
-      +schema: "{{ env_var('BRONZE_NAMESPACE', 'bronze') }}"
     silver:
-      +materialized: view
+      # PHẢI là table, không được là view: DuckDB-Iceberg chưa hỗ trợ CREATE VIEW
+      # (báo thẳng "Not implemented Error: Create View"). Chọn table cho CẢ HAI môi
+      # trường thay vì view-ở-Trino/table-ở-DuckDB, vì materialization khác nhau kéo
+      # theo hành vi khác nhau và làm hỏng mục tiêu "hai env cho cùng kết quả".
+      # Đánh đổi: tốn thêm dung lượng, và silver không còn tự động phản ánh bronze mới
+      # nhất mà phải build lại — nhưng `dbt build` vốn đã luôn chạy cả chuỗi.
+      +materialized: table
+      +schema: "{{ env_var('SILVER_NAMESPACE', 'silver') }}"
     gold:
       +materialized: table
+      +schema: "{{ env_var('GOLD_NAMESPACE', 'gold') }}"
 
 # =============================================================================
 # CẤU HÌNH TEST THEO TẦNG
 #
-# Cùng một test (not_null) mang ý nghĩa khác nhau tuỳ tầng nó đứng, nên severity phải
-# khác nhau — và đặt ở đây một chỗ thay vì lặp `config: severity:` trong từng file YAML.
+# Cùng một test (not_null) mang ý nghĩa khác nhau tuỳ tầng, nên severity phải khác nhau
+# — đặt một chỗ ở đây thay vì lặp `config: severity:` trong từng file YAML.
 #
-#   bronze -> warn : bronze có nhiệm vụ PHẢN ÁNH TRUNG THỰC nguồn, kể cả khi nguồn bẩn.
-#                    Để error thì mỗi lần nguồn lỗi là cả pipeline đứng, và ta mất luôn
-#                    khả năng nhìn thấy chính dữ liệu bẩn đó để đi báo bên nguồn.
 #   silver -> error: silver đã lọc _is_valid, không còn lý do gì để bẩn nữa.
 #   gold   -> error: gold là thứ người dùng đọc. Thà không có báo cáo còn hơn báo cáo sai.
 #
-# store_failures: ghi các dòng fail ra bảng thay vì chỉ đếm trong log, để mở lên xem được
-# ngay đúng dòng nào sai. Bật cho gold vì đó là nơi điều tra tốn thời gian nhất; các tầng
-# dưới bật theo từng test khi cần (xem fact_order_items.yml).
+# Test của tầng bronze là SOURCE TEST nên không cấu hình được theo đường dẫn model —
+# severity của chúng khai tường minh trong models/_sources.yml (đều là `warn`, vì bronze
+# có nhiệm vụ phản ánh trung thực nguồn kể cả khi nguồn bẩn).
+#
+# store_failures: ghi các dòng fail ra bảng thay vì chỉ đếm trong log, để mở lên xem
+# được đúng dòng nào sai. Bật theo từng test khi cần (xem gold/fact_order_items.yml).
 # Bảng kết quả nằm ở schema <schema>_dbt_test__audit.
 # =============================================================================
 data_tests:
   hdh_dbt:
     +severity: error
-    bronze:
-      +severity: warn
-

@@ -1,51 +1,62 @@
 """
-Đọc dữ liệu nguồn.
+Đọc dữ liệu NGUỒN — seam giữa local và production.
 
-ĐÂY LÀ SEAM GIỮA LOCAL VÀ PRODUCTION. Hiện tại nguồn là file CSV trong data/; ở production
-nguồn thường là bảng Postgres, một API, hay file Parquet trên S3. Chỗ duy nhất phải đổi là
-module này — `transform()` của từng bảng, silver, gold và test đều không biết dữ liệu đến
-từ đâu, nên không sửa dòng nào.
+ĐÂY LÀ CHỖ DUY NHẤT PHẢI ĐỔI KHI NGUỒN THAY ĐỔI. Hiện nguồn là file CSV trong data/;
+ở production thường là bảng Postgres, một API, hay Parquet trên S3.
 
-Thêm một loại nguồn = viết một hàm `read_*` rồi đăng ký vào SOURCE_READERS. Sau đó khai
-`type: <loại>` cho bảng đó trong ingestion/config/sources.yml.
+Kiến trúc sau refactor làm seam này SẠCH hơn bản cũ:
+
+    nguồn ──(module này)──► LANDING (Parquet trên MinIO) ──► bronze Iceberg
+            ^^^^^^^^^^^^                                     ^^^^^^^^^^^^^
+            chỗ DUY NHẤT                                     luôn đọc Parquet,
+            biết nguồn là gì                                 không cần biết nguồn
+                                                             gốc là gì
+
+Vì mọi thứ đều hạ cánh xuống Parquet trước, engine ingestion (DuckDB hay Spark) chỉ cần
+biết đọc Parquet. Thêm một loại nguồn = viết một hàm rồi đăng ký vào SOURCE_READERS, và
+khai `type: <loại>` cho bảng đó trong ingestion/config/sources.yml. Model SQL, silver,
+gold, test không đụng một dòng.
+
+Reader trả về một ĐOẠN SQL của DuckDB chứ không phải DataFrame: loader là job đổi định
+dạng chạy trên một máy, và SQL là cách gọn nhất diễn đạt nó. Đừng nhầm việc này với việc
+chọn execution engine cho pipeline — đó là chuyện của ingestion/engines/.
 """
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import StructType
+from typing import Dict
+
+from common.types import DUCKDB_TYPES, base_type, check_supported
 
 
-def read_csv(
-    spark: SparkSession,
-    source: str,
-    schema: StructType,
-    header: bool = True,
-    date_format: str = "yyyy-MM-dd",
-    timestamp_format: str = "yyyy-MM-dd'T'HH:mm:ss",
-) -> DataFrame:
-    """Đọc CSV với schema tường minh. Job gọi hàm này tự khai báo schema của mình.
+def read_csv(source: str, columns: Dict[str, str]) -> str:
+    """Đọc CSV với schema TƯỜNG MINH, trả về đoạn SQL dùng được sau FROM.
 
-    `source` là đường dẫn, có thể local (/opt/spark/data/x.csv) hoặc S3 (s3a://...).
+    KHÔNG dùng auto-detect: nó đoán sai lặng lẽ (cột zip toàn số thành integer, `01234`
+    mất số 0 đầu), đắt (quét file hai lượt), và che mất việc nguồn đổi cột.
 
-    KHÔNG dùng inferSchema: nó đoán sai lặng lẽ (cột zip toàn số thành integer, `01234`
-    mất số 0 đầu), đắt (phải quét file hai lượt), và che mất việc nguồn đổi cột.
+    Schema áp theo VỊ TRÍ, bỏ qua tên ở header (header=true để nhảy dòng đầu), nên đổi
+    được tên cột. Mặt trái: nguồn đổi THỨ TỰ cột thì dữ liệu vào nhầm cột mà không có
+    lỗi nào báo — đó là cái giá của CSV, và là một lý do nữa để landing dùng Parquet.
     """
-    return (
-        spark.read
-        .option("header", header)
-        .option("dateFormat", date_format)
-        .option("timestampFormat", timestamp_format)
-        .schema(schema)
-        .csv(source)
+    spec = ",\n            ".join(
+        f"'{name}': '{DUCKDB_TYPES[base_type(dtype)]}'"
+        for name, dtype in columns.items()
     )
+    return f"""read_csv(
+        '{source}',
+        header = true,
+        columns = {{
+            {spec}
+        }}
+    )"""
 
 
-# Đăng ký các loại nguồn đọc được. Test kiểm tra sources.yml không khai loại nào ngoài đây.
+# Đăng ký các loại nguồn đọc được. Test kiểm sources.yml không khai loại nào ngoài đây.
 #
 # Khi production đọc từ Postgres, thêm vào đây:
 #
-#     def read_jdbc(spark, source, schema, **opts):
-#         return spark.read.format("jdbc").option("url", source).option(...).load()
+#     def read_postgres(source, columns):
+#         return f"postgres_scan('{source}', 'public', 'orders')"
 #
-#     SOURCE_READERS = {"csv": read_csv, "postgres": read_jdbc}
+#     SOURCE_READERS = {"csv": read_csv, "postgres": read_postgres}
 #
 # rồi đổi `type: csv` thành `type: postgres` trong sources.yml cho bảng tương ứng.
 # Không có file nào khác phải sửa.
@@ -54,10 +65,8 @@ SOURCE_READERS = {
 }
 
 
-def read_source(
-    spark: SparkSession, source_type: str, source: str, schema: StructType
-) -> DataFrame:
-    """Đọc nguồn theo loại đã khai. Loại lạ thì báo lỗi ngay, không đoán."""
+def source_sql(source_type: str, source: str, columns: Dict[str, str]) -> str:
+    """Sinh SQL đọc nguồn theo loại đã khai. Loại lạ thì báo lỗi ngay, không đoán."""
     reader = SOURCE_READERS.get(source_type)
     if reader is None:
         raise ValueError(
@@ -65,4 +74,5 @@ def read_source(
             f"Các loại đã đăng ký: {sorted(SOURCE_READERS)}. "
             f"Thêm reader mới vào ingestion/common/io.py."
         )
-    return reader(spark, source, schema)
+    check_supported(source_type, columns, DUCKDB_TYPES)
+    return reader(source, columns)

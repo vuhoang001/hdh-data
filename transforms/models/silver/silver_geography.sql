@@ -1,6 +1,6 @@
 -- Silver: bảng tra cứu zip -> city/region/district.
 with source as (
-    select * from {{ bronze('geography') }}
+    select * from {{ source('bronze', 'geography') }}
 )
 
 select

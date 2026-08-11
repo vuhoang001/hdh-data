@@ -2,7 +2,7 @@
 -- KHÔNG join sang geography ở đây: silver giữ từng bảng đúng hình dạng nguồn, việc phi
 -- chuẩn hoá (gộp city/region/district vào khách) là chuyện của dim_customer ở gold.
 with source as (
-    select * from {{ bronze('customers') }}
+    select * from {{ source('bronze', 'customers') }}
 )
 
 select

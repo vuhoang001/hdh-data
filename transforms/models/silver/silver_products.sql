@@ -5,7 +5,7 @@
 -- price ở đây. Muốn tính doanh thu, LUÔN dùng order_items.unit_price — giá tại thời
 -- điểm giao dịch nằm ở fact, không nằm ở dimension.
 with source as (
-    select * from {{ bronze('products') }}
+    select * from {{ source('bronze', 'products') }}
 )
 
 select

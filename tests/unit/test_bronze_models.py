@@ -25,13 +25,13 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ingestion"))
 
 from common import spec, sql_model  # noqa: E402  (sau khi đã chỉnh sys.path)
 
 SOURCES_FILE = REPO_ROOT / "ingestion" / "config" / "sources.yml"
-MODELS_DIR = REPO_ROOT / "transforms" / "models" / "bronze"
+MODELS_DIR = REPO_ROOT / "transforms" / "bronze"
 DATA_DIR = REPO_ROOT / "data"
 IO_FILE = REPO_ROOT / "ingestion" / "common" / "io.py"
 

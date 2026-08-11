@@ -21,6 +21,18 @@ spark.sql.catalog.${ICEBERG_CATALOG_NAME}.io-impl               org.apache.icebe
 spark.sql.catalog.${ICEBERG_CATALOG_NAME}.s3.endpoint           ${S3_ENDPOINT}
 spark.sql.catalog.${ICEBERG_CATALOG_NAME}.s3.path-style-access  true
 
+# ---- S3A: để Spark ĐỌC FILE THÔ trên MinIO (landing zone) -------------------
+# Khác với khối trên: khối trên cấu hình Iceberg (S3FileIO) cho các BẢNG của catalog,
+# khối này cấu hình Hadoop FileSystem cho spark.read.parquet("s3a://..."). Hai đường IO
+# độc lập nhau — có cái này không suy ra có cái kia.
+spark.hadoop.fs.s3a.impl                 org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.endpoint             ${S3_ENDPOINT}
+spark.hadoop.fs.s3a.access.key           ${AWS_ACCESS_KEY_ID}
+spark.hadoop.fs.s3a.secret.key           ${AWS_SECRET_ACCESS_KEY}
+# MinIO không hỗ trợ virtual-host style (bucket.host), phải dùng path style
+spark.hadoop.fs.s3a.path.style.access    true
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+
 # Dùng iceberg làm catalog mặc định
 spark.sql.defaultCatalog        ${ICEBERG_CATALOG_NAME}
 spark.sql.catalogImplementation in-memory

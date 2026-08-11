@@ -18,6 +18,15 @@ venv/
 
 # local
 .DS_Store
+
+# Cấu hình: config/.env.{shared,dev,prod} ĐƯỢC commit — chúng chỉ chứa giá trị
+# mặc định và placeholder, và là thứ khiến `git clone && make dev-up` chạy được.
+# Secret thật đi qua config/.env.local (không commit) hoặc secret manager.
 .env
 .env.*
 !.env.example
+!config/.env.shared
+!config/.env.dev
+!config/.env.prod
+!config/.env.local.example
+config/.env.local

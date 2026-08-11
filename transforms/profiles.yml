@@ -1,25 +1,60 @@
-# Kết nối của dbt. Mọi giá trị lấy từ .env qua env_var() — ĐỪNG hardcode ở đây.
-# Giá trị thứ hai của env_var() chỉ là fallback khi chạy dbt ngoài container.
+# Kết nối của dbt. Mọi giá trị lấy từ config/.env.* qua env_var() — ĐỪNG hardcode.
+#
+# HAI target, MỘT storage:
+#
+#   dev  -> DuckDB ─┐
+#                   ├─► Iceberg REST catalog ─► MinIO
+#   prod -> Trino  ─┘
+#
+# Đây là điểm khác biệt cốt lõi so với bản trước: target `duckdb` cũ ghi vào một FILE
+# .duckdb local và đọc CSV từ bind mount, tức dev và prod không dùng chung dữ liệu nào.
+# Giờ cả hai trỏ vào cùng catalog, cùng bucket, cùng bảng Iceberg.
 hdh_dbt:
-  # Mặc định chạy môi trường nhẹ DuckDB. Môi trường lakehouse chọn bằng --target trino
-  # (Makefile đã set sẵn cho từng stack).
-  target: duckdb
+  # Target mặc định lấy từ môi trường, nên `dbt build` không kèm --target vẫn đúng.
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
   outputs:
 
-    # ---- Môi trường 1: DuckDB (nhẹ) — bronze+silver+gold chạy trọn trong 1 file .duckdb ----
-    duckdb:
+    # ---- DEV: DuckDB đọc/ghi Iceberg trên MinIO -------------------------------
+    dev:
       type: duckdb
-      # Trong container: DUCKDB_PATH=/warehouse/hdh.duckdb, nằm trên named volume nên
-      # giữ lại giữa các lần chạy. Xem infra/local/compose.duckdb.yml.
-      # Fallback là file cạnh project — chỉ dùng khi chạy dbt ngoài container (IDE),
-      # vì /warehouse không tồn tại trên host. File này đã nằm trong .gitignore.
-      path: "{{ env_var('DUCKDB_PATH', 'hdh_local.duckdb') }}"
-      # silver/gold vào schema analytics; bronze vào schema bronze (đặt ở dbt_project.yml)
-      schema: "{{ env_var('ANALYTICS_SCHEMA', 'analytics') }}"
+      # File này KHÔNG phải kho dữ liệu — chỉ là database tạm để có chỗ ATTACH catalog.
+      # Toàn bộ dữ liệu nằm trên Iceberg/MinIO. Xoá file đi không mất gì.
+      path: "{{ env_var('DUCKDB_PATH', '/tmp/dev_scratch.duckdb') }}"
+      # database = alias của catalog đã ATTACH bên dưới, để model materialize vào Iceberg
+      # chứ không vào file .duckdb.
+      database: "{{ env_var('ICEBERG_CATALOG_NAME', 'iceberg') }}"
+      schema: "{{ env_var('SILVER_NAMESPACE', 'silver') }}"
       threads: 4
 
-    # ---- Môi trường 2: Trino (lakehouse) — silver/gold qua Trino trên Iceberg ----
-    trino:
+      extensions:
+        - httpfs
+        - iceberg
+
+      # Secret S3 trỏ vào MinIO. endpoint KHÔNG có scheme (khác S3_ENDPOINT của
+      # Spark/Trino); url_style=path và use_ssl=false là bắt buộc với MinIO local.
+      secrets:
+        - type: s3
+          key_id: "{{ env_var('AWS_ACCESS_KEY_ID', 'admin') }}"
+          secret: "{{ env_var('AWS_SECRET_ACCESS_KEY', 'change-me') }}"
+          endpoint: "{{ env_var('MINIO_ENDPOINT', 'minio:9000') }}"
+          region: "{{ env_var('AWS_REGION', 'us-east-1') }}"
+          url_style: path
+          use_ssl: false
+
+      # ATTACH Iceberg REST catalog.
+      # authorization_type: none là BẮT BUỘC — iceberg-rest trong stack này chạy không
+      # auth, còn DuckDB mặc định giả định oauth2 và sẽ báo:
+      #   "AUTHORIZATION_TYPE is 'oauth2', yet no 'secret' was provided..."
+      attach:
+        - path: "{{ env_var('WAREHOUSE_BUCKET', 'warehouse') }}"
+          alias: "{{ env_var('ICEBERG_CATALOG_NAME', 'iceberg') }}"
+          type: ICEBERG
+          options:
+            endpoint: "{{ env_var('ICEBERG_REST_URI', 'http://iceberg-rest:8181') }}"
+            authorization_type: none
+
+    # ---- PROD: Trino trên Iceberg --------------------------------------------
+    prod:
       type: trino
       method: none            # Trino chạy không auth trong môi trường học
       user: "{{ env_var('TRINO_USER', 'admin') }}"
@@ -27,6 +62,6 @@ hdh_dbt:
       port: "{{ env_var('TRINO_PORT', '8080') | int }}"
       # database = tên catalog của Trino, phải khớp ICEBERG_CATALOG_NAME
       database: "{{ env_var('ICEBERG_CATALOG_NAME', 'iceberg') }}"
-      schema: "{{ env_var('ANALYTICS_SCHEMA', 'analytics') }}"
+      schema: "{{ env_var('SILVER_NAMESPACE', 'silver') }}"
       threads: 4
       http_scheme: http

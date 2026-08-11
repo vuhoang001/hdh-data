@@ -1,180 +1,203 @@
 # =============================================================================
-# hdh-data — HAI môi trường độc lập, chọn theo tiền tố target:
+# hdh-data — MỘT pipeline, HAI execution engine.
 #
-#   duckdb-*  : môi trường NHẸ      (CSV -> DuckDB, chỉ cần Docker, chạy vài giây)
-#   lake-*    : môi trường LAKEHOUSE (MinIO+Iceberg+Spark+Trino, giống production)
+#   ENV=dev   (mặc định)   dbt ──► DuckDB ──► Iceberg ──► MinIO
+#   ENV=prod               dbt ──► Trino  ──► Iceberg ──► MinIO
 #
-# Luồng nhanh:
-#   DuckDB    : make duckdb-up && make duckdb-deps && make duckdb-run && make duckdb-query
-#   Lakehouse : make lake-up && make lake-ingest && make lake-dbt-deps && make lake-dbt && make lake-query
+# Khác nhau ĐÚNG ở: execution engine, namespace, lượng dữ liệu.
+# Giống nhau: model dbt, business logic, data contract, test.
+#
+# Luồng đầy đủ:
+#   make setup && make up && make pipeline && make test
+#   make ENV=prod up && make ENV=prod pipeline
+#
+# Mọi target đều nhận ENV=, ví dụ:  make ENV=prod dbt-build
 # =============================================================================
 
 .DEFAULT_GOAL := help
 
-# .env là nguồn sự thật duy nhất cho cấu hình. Makefile nạp nó để dùng chung các
-# đường dẫn container với docker compose — không định nghĩa lại ở đây.
-# `-include` để `make help` vẫn chạy được khi chưa có .env.
--include .env
+# ---- Môi trường --------------------------------------------------------------
+ENV ?= dev
 
-# Container dbt chạy bằng UID/GID của bạn, không phải root. Không có dòng này thì mọi file
-# dbt sinh ra trên bind mount (target/, logs/, dbt_packages/, package-lock.yml) sẽ thuộc
-# root:root — IDE không sửa được và chính bạn cũng không `rm` được nếu không có sudo.
+# Thứ tự nạp quyết định cái nào thắng: .env.local nạp SAU CÙNG nên override được
+# mọi thứ. `-include` (không phải `include`) để `make help` chạy được khi thiếu file.
+-include config/.env.shared
+-include config/.env.$(ENV)
+-include config/.env.local
+
+# Container chạy bằng UID/GID của bạn, không phải root. Không có dòng này thì mọi file
+# dbt sinh ra trên bind mount (target/, logs/, dbt_packages/) sẽ thuộc root:root —
+# IDE không sửa được và chính bạn cũng không `rm` được nếu không có sudo.
 DOCKER_USER := $(shell id -u):$(shell id -g)
 
 export
 
-# --project-directory . để mọi đường dẫn trong compose tính từ gốc repo và .env được nạp.
-COMPOSE_DUCKDB = docker compose --project-directory . -f infra/local/compose.duckdb.yml
-COMPOSE_LAKE   = docker compose --project-directory . -f infra/local/compose.lakehouse.yml
+# ---- docker compose ----------------------------------------------------------
+# --project-directory . để mọi đường dẫn trong compose tính từ gốc repo.
+# --env-file tường minh: KHÔNG để compose tự nạp .env ở gốc repo, vì file đó là
+# cấu hình CŨ và sẽ âm thầm ghi đè namespace của môi trường đang chọn.
+LOCAL_ENV := $(if $(wildcard config/.env.local),--env-file config/.env.local,)
 
-# Danh sách bảng bronze đọc TRỰC TIẾP từ ingestion/config/sources.yml — không lặp lại
-# ở đây. Thêm bảng mới chỉ cần khai báo trong sources.yml + tạo file connector.
+COMPOSE = docker compose --project-directory . \
+	--env-file config/.env.shared --env-file config/.env.$(ENV) $(LOCAL_ENV) \
+	-f infra/compose.base.yml -f infra/compose.$(ENV).yml
+
+# ---- Engine ingestion đổi theo môi trường ------------------------------------
+# ĐÂY là chỗ DUY NHẤT trong repo mà môi trường quyết định chương trình nào chạy —
+# và nó chỉ chọn RUNTIME, không chọn logic: cả hai engine chạy chính
+# transforms/models/bronze/bronze_<bảng>.sql.
+ifeq ($(INGESTION_ENGINE),spark)
+  INGEST_RUN = $(COMPOSE) exec -T spark /opt/spark/bin/spark-submit $(SPARK_JOBS_DIR)/ingest.py
+else
+  INGEST_RUN = $(COMPOSE) exec -T dbt python $(INGEST_JOBS_DIR)/ingest.py
+endif
+
+# Loader landing chạy trong container `dbt` ở CẢ HAI môi trường, KHÔNG theo
+# INGESTION_ENGINE. Nó là job đổi định dạng chạy trên một máy (nguồn -> Parquet), không
+# phải execution engine của pipeline — và image Spark cố tình không cài duckdb.
+LANDING_RUN = $(COMPOSE) exec -T dbt python $(INGEST_JOBS_DIR)/load_landing.py
+
+DBT_RUN = $(COMPOSE) exec -T dbt dbt
+
+# Danh sách bảng bronze đọc TRỰC TIẾP từ sources.yml — không lặp lại ở đây.
 SOURCES_FILE   = ingestion/config/sources.yml
 BRONZE_TABLES := $(shell sed -n 's/^[[:space:]]*-[[:space:]]*table:[[:space:]]*//p' $(SOURCES_FILE) 2>/dev/null)
-INGEST_TARGETS = $(addprefix lake-ingest-,$(BRONZE_TABLES))
+INGEST_TARGETS = $(addprefix ingest-,$(BRONZE_TABLES))
 
-# CHÚ Ý: KHÔNG khai báo $(INGEST_TARGETS) là .PHONY. GNU make bỏ qua việc tìm pattern rule
-# cho target phony, nên `make lake-ingest-orders` sẽ báo "Nothing to be done" thay vì chạy.
-# Các target này không trùng tên file nào nên vẫn luôn được chạy lại.
-.PHONY: help env-check \
-        duckdb-up duckdb-deps duckdb-run duckdb-test duckdb-query duckdb-shell \
-        duckdb-test-unit duckdb-test-data duckdb-test-store duckdb-test-failures \
-        duckdb-down duckdb-clean duckdb-ps \
-        lake-up lake-down lake-clean lake-ps lake-logs lake-dbt-deps lake-dbt lake-dbt-test \
-        lake-freshness lake-ingest-list \
-        lake-trino lake-spark-sql lake-query lake-ingest \
-        ci-local
+# CHÚ Ý: KHÔNG khai $(INGEST_TARGETS) là .PHONY. GNU make bỏ qua việc tìm pattern rule
+# cho target phony, nên `make ingest-orders` sẽ báo "Nothing to be done".
+.PHONY: help setup env-check doctor up down clean ps logs \
+        landing ingest ingest-list \
+        dbt-deps dbt-run dbt-test dbt-build dbt-unit \
+        pipeline test test-repo query shell trino-cli spark-sql ci-local
 
+# =========================================================================
+# Trợ giúp
+# =========================================================================
 help:          ## Danh sách lệnh
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
-	awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "  Môi trường hiện tại: ENV=$(ENV)  (engine: dbt->$(DBT_TARGET), ingest->$(INGESTION_ENGINE))"
+	@echo "  Đổi bằng:  make ENV=prod <target>"
 	@echo ""
-	@echo "  Ingest từng bảng: make lake-ingest-<bảng>"
-	@echo "  Bảng khai báo ở $(SOURCES_FILE):"
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "  Ingest từng bảng: make ingest-<bảng>"
+	@echo "  Bảng khai ở $(SOURCES_FILE):"
 	@echo "    $(BRONZE_TABLES)" | fold -s -w 76 | sed 's/^/    /'
 
-env-check:     ## Kiểm tra .env đã sẵn sàng
-	@test -f .env || { echo "Thiếu .env — chạy: cp .env.example .env"; exit 1; }
-	@echo ".env OK  (catalog=$(ICEBERG_CATALOG_NAME), bucket=$(WAREHOUSE_BUCKET), analytics=$(ANALYTICS_SCHEMA))"
+setup:         ## Khởi tạo lần đầu (tạo .env.local, build image, cài dbt deps)
+	@test -f config/.env.local || { \
+	  cp config/.env.local.example config/.env.local; \
+	  echo ">> Đã tạo config/.env.local — sửa secret trong đó nếu cần"; }
+	$(MAKE) ENV=$(ENV) up
+	$(MAKE) ENV=$(ENV) dbt-deps
+	@echo ">> Sẵn sàng. Chạy: make pipeline"
+
+env-check:     ## In cấu hình đang có hiệu lực
+	@echo "ENV=$(ENV)  ENVIRONMENT=$(ENVIRONMENT)"
+	@echo "  dbt target      : $(DBT_TARGET)"
+	@echo "  ingestion engine: $(INGESTION_ENGINE)"
+	@echo "  catalog         : $(ICEBERG_CATALOG_NAME) @ $(ICEBERG_REST_URI)"
+	@echo "  bucket          : $(WAREHOUSE_BUCKET)  (landing: $(LANDING_PREFIX)/)"
+	@echo "  namespace       : $(BRONZE_NAMESPACE) / $(SILVER_NAMESPACE) / $(GOLD_NAMESPACE)"
+	@echo "  minio endpoint  : $(MINIO_ENDPOINT)"
+	@echo "  sample          : $(SAMPLE_ENABLED)"
+
+doctor:        ## Kiểm tra hạ tầng + cấu hình + kết nối
+	@bash scripts/doctor.sh
 
 # =========================================================================
-# Môi trường 1: DuckDB — bronze+silver+gold chạy trọn trong dbt-duckdb
+# Vòng đời hạ tầng
 # =========================================================================
-duckdb-up:     ## [duckdb] Bật container dbt-duckdb (build lần đầu)
-	$(COMPOSE_DUCKDB) up -d --build
+up:            ## Bật stack của môi trường đang chọn
+	$(COMPOSE) up -d --build --remove-orphans
 
-duckdb-deps:   ## [duckdb] Cài dbt_utils (chạy 1 lần)
-	$(COMPOSE_DUCKDB) exec dbt dbt deps
+down:          ## Dừng stack (GIỮ dữ liệu)
+	$(COMPOSE) down --remove-orphans
 
-duckdb-run:    ## [duckdb] Build cả pipeline: bronze -> silver -> gold + test
-	$(COMPOSE_DUCKDB) exec dbt dbt build --target duckdb
+clean:         ## Dừng + XOÁ volume (mất sạch dữ liệu MinIO + catalog)
+	$(COMPOSE) down -v --remove-orphans
 
-duckdb-test:   ## [duckdb] Chỉ chạy test dữ liệu
-	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb
+ps:            ## Trạng thái container
+	$(COMPOSE) ps
 
-# Unit test kiểm CÔNG THỨC SQL bằng dữ liệu bịa (models/gold/_unit_tests.yml), không đụng
-# tới dữ liệu thật. Chạy trong 2 giây nên dùng được ngay trong lúc sửa model, thay vì phải
-# build lại 714k dòng mới biết công thức đúng hay sai.
-duckdb-test-unit:  ## [duckdb] Chỉ chạy unit test (nhanh, không cần dữ liệu)
-	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb --select "test_type:unit"
-
-# Chỉ chạy các data test (loại trừ unit test) — dùng khi muốn kiểm dữ liệu thật.
-duckdb-test-data:  ## [duckdb] Chỉ chạy data test trên dữ liệu thật
-	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb --exclude "test_type:unit"
-
-# --store-failures ghi CÁC DÒNG SAI của mọi test ra bảng thay vì chỉ đếm trong log.
-# Dùng khi đang điều tra: chạy xong thì mở bảng lên xem đúng dòng nào hỏng, không phải
-# đi tìm lại câu SQL của test trong target/compiled/.
-duckdb-test-store: ## [duckdb] Chạy test + ghi các dòng fail ra bảng để điều tra
-	$(COMPOSE_DUCKDB) exec dbt dbt test --target duckdb --store-failures
-
-duckdb-test-failures: ## [duckdb] Liệt kê các bảng chứa dòng fail đã lưu
-	$(COMPOSE_DUCKDB) exec dbt python -c \
-	  "import duckdb; duckdb.connect('$(DUCKDB_PATH)').sql(\"select table_name, estimated_size as rows from duckdb_tables() where schema_name like '%dbt_test__audit'\").show()"
-
-duckdb-query:  ## [duckdb] Xem thử 1 bảng gold
-	$(COMPOSE_DUCKDB) exec dbt dbt show --target duckdb --limit 20 \
-	  --inline "select * from $(ANALYTICS_SCHEMA).gold_orders_daily order by order_date"
-
-duckdb-shell:  ## [duckdb] Mở DuckDB CLI trên file warehouse
-	$(COMPOSE_DUCKDB) exec dbt python -c \
-	  "import duckdb; duckdb.connect('$(DUCKDB_PATH)').sql('show all tables').show()"
-
-duckdb-ps:     ## [duckdb] Trạng thái container
-	$(COMPOSE_DUCKDB) ps
-
-duckdb-down:   ## [duckdb] Dừng (giữ file .duckdb)
-	$(COMPOSE_DUCKDB) down
-
-duckdb-clean:  ## [duckdb] Dừng + xoá volume (mất file .duckdb)
-	$(COMPOSE_DUCKDB) down -v
+logs:          ## Xem log
+	$(COMPOSE) logs -f
 
 # =========================================================================
-# Môi trường 2: Lakehouse (MinIO + Iceberg + Spark + Trino)
+# Pipeline:  nguồn -> landing -> bronze -> silver -> gold
 # =========================================================================
-lake-up:       ## [lakehouse] Bật toàn bộ stack (build image lần đầu)
-	$(COMPOSE_LAKE) up -d --build
+landing:       ## B1. Đẩy nguồn lên landing zone (Parquet trên MinIO)
+	$(LANDING_RUN)
 
-lake-ps:       ## [lakehouse] Trạng thái container
-	$(COMPOSE_LAKE) ps
+ingest: $(INGEST_TARGETS)   ## B2. Landing -> bronze Iceberg (toàn bộ bảng)
 
-lake-logs:     ## [lakehouse] Xem log
-	$(COMPOSE_LAKE) logs -f
+# MỘT script chung cho mọi bảng và mọi engine. ingest.py đọc chính
+# transforms/models/bronze/bronze_<bảng>.sql (cùng file dbt dùng) rồi chạy nó.
+ingest-%:
+	$(INGEST_RUN) --table $*
 
-lake-down:     ## [lakehouse] Dừng stack (giữ dữ liệu)
-	$(COMPOSE_LAKE) down
+ingest-list:   ## Liệt kê các bảng bronze đã khai trong sources.yml
+	$(INGEST_RUN) --list
 
-lake-clean:    ## [lakehouse] Dừng + xoá volume MinIO (mất sạch dữ liệu)
-	$(COMPOSE_LAKE) down -v
+dbt-deps:      ## Cài dbt_utils (chạy 1 lần)
+	$(DBT_RUN) deps
 
-# ----- Bước 1: Ingest bằng Spark (nguồn -> Iceberg bronze) -----
-SPARK_SUBMIT = $(COMPOSE_LAKE) exec spark /opt/spark/bin/spark-submit $(SPARK_JOBS_DIR)/ingest.py
+dbt-run:       ## B3. Chỉ build model (không test)
+	$(DBT_RUN) run --target $(DBT_TARGET)
 
-lake-ingest: $(INGEST_TARGETS)   ## [lakehouse] Ingest toàn bộ bảng bronze
+dbt-build:     ## B3. Build silver + gold VÀ chạy test sau mỗi model
+	$(DBT_RUN) build --target $(DBT_TARGET)
 
-# MỘT script chung cho mọi bảng — không còn 13 file ingest_*.py. ingest.py đọc chính
-# transforms/models/bronze/bronze_<bảng>.sql (cùng file dbt build) rồi chạy bằng spark.sql().
-#   make lake-ingest-orders -> spark-submit ingest.py --table orders
-lake-ingest-%:
-	$(SPARK_SUBMIT) --table $*
+dbt-test:      ## Chỉ chạy test dữ liệu
+	$(DBT_RUN) test --target $(DBT_TARGET)
 
-lake-ingest-list: ## [lakehouse] Liệt kê các bảng bronze đã khai trong sources.yml
-	$(SPARK_SUBMIT) --list
+# Unit test kiểm CÔNG THỨC SQL bằng dữ liệu bịa (models/gold/_unit_tests.yml),
+# không đụng dữ liệu thật. Chạy trong vài giây nên dùng được ngay lúc đang sửa model.
+dbt-unit:      ## Chỉ chạy unit test (nhanh, không cần dữ liệu)
+	$(DBT_RUN) test --target $(DBT_TARGET) --select "test_type:unit"
 
-lake-spark-sql: ## [lakehouse] Mở spark-sql tương tác
-	$(COMPOSE_LAKE) exec spark /opt/spark/bin/spark-sql
-
-# ----- Bước 2: Transform + Test bằng dbt (qua Trino) -----
-lake-dbt-deps: ## [lakehouse] Cài dbt_utils (chạy 1 lần)
-	$(COMPOSE_LAKE) exec dbt dbt deps
-
-lake-dbt:      ## [lakehouse] Build model dbt silver + gold (--target trino)
-	$(COMPOSE_LAKE) exec dbt dbt build --target trino
-
-lake-dbt-test: ## [lakehouse] Chỉ chạy test dữ liệu
-	$(COMPOSE_LAKE) exec dbt dbt test --target trino
-
-# source freshness KHÔNG nằm trong `dbt test` — nó là lệnh riêng, và chỉ chạy được ở đây
-# vì ở môi trường DuckDB không có source nào (bronze là model chứ không phải source).
-# Nó đọc max(_ingested_at) của từng bảng bronze và so với ngưỡng ở models/silver/_sources.yml.
-# Đây là thứ duy nhất phát hiện được "job Spark chết âm thầm": dữ liệu cũ vẫn hợp lệ nên
-# mọi test khác vẫn xanh, chỉ là không còn dữ liệu mới chảy vào.
-lake-freshness: ## [lakehouse] Kiểm độ tươi của các bảng bronze (source freshness)
-	$(COMPOSE_LAKE) exec dbt dbt source freshness --target trino
-
-# ----- Bước 3: Truy vấn bằng Trino -----
-lake-trino:    ## [lakehouse] Mở Trino CLI
-	$(COMPOSE_LAKE) exec trino trino
-
-lake-query:    ## [lakehouse] Chạy nhanh 1 query mẫu
-	$(COMPOSE_LAKE) exec trino trino --catalog $(ICEBERG_CATALOG_NAME) --execute \
-	"SELECT * FROM $(ANALYTICS_SCHEMA).gold_orders_daily ORDER BY order_date LIMIT 20;"
+pipeline:      ## Chạy TRỌN pipeline: landing -> bronze -> silver -> gold + test
+	$(MAKE) ENV=$(ENV) landing
+	$(MAKE) ENV=$(ENV) ingest
+	$(MAKE) ENV=$(ENV) dbt-build
 
 # =========================================================================
-# CI — chạy đúng chuỗi mà .github/workflows/ci.yml chạy
+# Test
 # =========================================================================
-ci-local:      ## Chạy toàn bộ pipeline DuckDB + test (dùng cho CI và kiểm tra nhanh)
-	$(COMPOSE_DUCKDB) up -d --build
-	$(COMPOSE_DUCKDB) exec -T dbt dbt deps
-	$(COMPOSE_DUCKDB) exec -T dbt dbt build --target duckdb
-	$(COMPOSE_DUCKDB) down
+# Ưu tiên .venv của repo, không thì rơi về python3 hệ thống. `pytest` trần hay thất bại
+# vì nó chỉ có trên PATH khi virtualenv đang được activate.
+PYTEST := $(shell if [ -x .venv/bin/pytest ]; then echo .venv/bin/pytest; else echo "python3 -m pytest"; fi)
+
+test-repo:     ## Test cấu trúc repo (pytest, không cần Docker)
+	$(PYTEST) tests/unit -q
+
+test:          ## Toàn bộ test: cấu trúc repo + dữ liệu
+	$(MAKE) test-repo
+	$(MAKE) ENV=$(ENV) dbt-test
+
+# =========================================================================
+# Truy vấn / shell
+# =========================================================================
+query:         ## Xem thử một bảng gold
+	$(DBT_RUN) show --target $(DBT_TARGET) --limit 20 \
+	  --inline "select * from {{ target.schema }}.gold_orders_daily order by order_date"
+
+shell:         ## Mở shell trong container runner
+	$(COMPOSE) exec dbt bash
+
+trino-cli:     ## [prod] Mở Trino CLI
+	$(COMPOSE) exec trino trino
+
+spark-sql:     ## [prod] Mở spark-sql tương tác
+	$(COMPOSE) exec spark /opt/spark/bin/spark-sql
+
+# =========================================================================
+# CI — chuỗi mà .github/workflows/ci.yml chạy
+# =========================================================================
+ci-local:      ## Chạy đúng chuỗi CI (môi trường dev)
+	$(MAKE) ENV=dev up
+	$(MAKE) ENV=dev dbt-deps
+	$(MAKE) ENV=dev pipeline
+	$(MAKE) test-repo
+	$(MAKE) ENV=dev down

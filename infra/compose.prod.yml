@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# OVERLAY MÔI TRƯỜNG PRODUCTION — execution engine là Trino.
+#
+#   dbt ──► Trino ──► Iceberg ──► MinIO         (MinIO/catalog ở compose.base.yml)
+#   Spark ──► Iceberg bronze                    (ingestion khi cần scale)
+#
+# Chồng lên compose.base.yml:
+#   docker compose -f infra/compose.base.yml -f infra/compose.prod.yml up -d
+#
+# PROD KHÔNG phụ thuộc DuckDB. Service `dbt` ở đây chạy đúng bộ model mà dev chạy,
+# chỉ khác --target.
+# ---------------------------------------------------------------------------
+
+services:
+  # ----------------------- Trino (SQL query engine) ------------------------
+  trino:
+    image: ${TRINO_IMAGE}
+    container_name: hdh-trino
+    depends_on:
+      - iceberg-rest
+    ports:
+      - "${TRINO_PORT}:8080"   # Trino UI / JDBC -> http://localhost:8080
+    environment:
+      # catalog/iceberg.properties đọc các biến này bằng cú pháp ${ENV:...}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      ICEBERG_CATALOG_NAME: ${ICEBERG_CATALOG_NAME}
+      ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+      BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
+    volumes:
+      - ./engine-runners/trino-runner/catalog:/etc/trino/catalog:ro
+    networks: [hdh]
+
+  # ----------------------- Spark (ingest engine, scale) --------------------
+  spark:
+    build:
+      context: ./engine-runners/spark-runner
+      args:
+        SPARK_BASE_IMAGE: ${SPARK_BASE_IMAGE}
+        ICEBERG_VERSION: ${ICEBERG_VERSION}
+        PYYAML_VERSION: ${PYYAML_VERSION}
+        HADOOP_AWS_VERSION: ${HADOOP_AWS_VERSION}
+        AWS_SDK_BUNDLE_VERSION: ${AWS_SDK_BUNDLE_VERSION}
+    # Tag mang cả version S3A: đổi jar mà giữ nguyên tag sẽ khiến máy khác dùng lại
+    # image cũ trong cache và không hiểu vì sao vẫn lỗi đọc landing.
+    image: hdh-spark:${ICEBERG_VERSION}-s3a${HADOOP_AWS_VERSION}
+    container_name: hdh-spark
+    depends_on:
+      - iceberg-rest
+    environment:
+      # entrypoint nội suy spark-defaults.conf.tmpl từ các biến này
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      LANDING_PREFIX: ${LANDING_PREFIX}
+      ICEBERG_CATALOG_NAME: ${ICEBERG_CATALOG_NAME}
+      ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+      BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
+      SILVER_NAMESPACE: ${SILVER_NAMESPACE}
+      GOLD_NAMESPACE: ${GOLD_NAMESPACE}
+      ENVIRONMENT: ${ENVIRONMENT}
+      INGESTION_ENGINE: ${INGESTION_ENGINE}
+      SPARK_CONF_TEMPLATE: /opt/spark/conf-template/spark-defaults.conf.tmpl
+      SPARK_DATA_DIR: ${SPARK_DATA_DIR}
+      # spark-submit chỉ add thư mục chứa script vào sys.path, nên phải trỏ thêm
+      # vào gốc ingestion/ để "from common import ..." thấy package
+      PYTHONPATH: ${SPARK_JOBS_DIR}
+      # Model bronze DÙNG CHUNG với dbt — Spark chạy chính các file .sql mà dbt đọc
+      INGEST_MODELS_DIR: ${SPARK_BRONZE_DIR}
+      INGEST_SOURCES_FILE: ${SPARK_JOBS_DIR}/config/sources.yml
+      SAMPLE_ENABLED: ${SAMPLE_ENABLED}
+    volumes:
+      - ./ingestion:${SPARK_JOBS_DIR}:ro
+      - ./engine-runners/spark-runner:/opt/spark/conf-template:ro
+      - ./data:${SPARK_DATA_DIR}:ro
+      # CHỈ ĐỌC: Spark chạy đặc tả bronze dùng chung nhưng không được sinh file gì
+      # trong đó (target/, logs/ là của container dbt, và nó chạy bằng UID khác).
+      - ./transforms/bronze:${SPARK_BRONZE_DIR}:ro
+    command: ["tail", "-f", "/dev/null"]
+    networks: [hdh]
+
+  # ----------------------- dbt (transform + test qua Trino) ----------------
+  dbt:
+    build:
+      context: ./engine-runners/dbt-runner
+      args:
+        DBT_CORE_VERSION: ${DBT_CORE_VERSION}
+        DBT_DUCKDB_VERSION: ${DBT_DUCKDB_VERSION}
+        DBT_TRINO_VERSION: ${DBT_TRINO_VERSION}
+        DUCKDB_VERSION: ${DUCKDB_VERSION}
+        PYARROW_VERSION: ${PYARROW_VERSION}
+        BOTO3_VERSION: ${BOTO3_VERSION}
+        PYYAML_VERSION: ${PYYAML_VERSION}
+        DBT_PROJECT_DIR: ${DBT_PROJECT_DIR}
+    image: hdh-dbt:${DBT_CORE_VERSION}-${DUCKDB_VERSION}
+    container_name: hdh-dbt
+    depends_on:
+      - trino
+    user: "${DOCKER_USER:-1000:1000}"
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT}
+      DBT_TARGET: ${DBT_TARGET}
+      TRINO_HOST: ${TRINO_HOST}
+      TRINO_PORT: 8080          # cổng TRONG network, không phải cổng map ra host
+      TRINO_USER: ${TRINO_USER}
+      ICEBERG_CATALOG_NAME: ${ICEBERG_CATALOG_NAME}
+      ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+      BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
+      SILVER_NAMESPACE: ${SILVER_NAMESPACE}
+      GOLD_NAMESPACE: ${GOLD_NAMESPACE}
+      # Loader landing chạy trong container này ở CẢ HAI môi trường: nó chỉ là job đổi
+      # định dạng chạy trên một máy, không phải execution engine của pipeline.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      LANDING_PREFIX: ${LANDING_PREFIX}
+      SAMPLE_ENABLED: ${SAMPLE_ENABLED}
+      INGEST_MODELS_DIR: ${DBT_PROJECT_DIR}/bronze
+      INGEST_SOURCES_FILE: ${INGEST_JOBS_DIR}/config/sources.yml
+      PYTHONPATH: ${INGEST_JOBS_DIR}
+    volumes:
+      - ./transforms:${DBT_PROJECT_DIR}
+      - ./ingestion:${INGEST_JOBS_DIR}:ro
+      - ./data:${DBT_DATA_DIR}:ro
+    working_dir: ${DBT_PROJECT_DIR}
+    command: ["tail", "-f", "/dev/null"]
+    networks: [hdh]

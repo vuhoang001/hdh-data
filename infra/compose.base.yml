@@ -1,0 +1,140 @@
+# ---------------------------------------------------------------------------
+# HẠ TẦNG DÙNG CHUNG cho CẢ dev VÀ prod.
+#
+#   minio            object storage (S3) chứa file dữ liệu Iceberg
+#   minio-init       tạo bucket + prefix landing/ rồi thoát
+#   iceberg-postgres metastore lưu danh sách namespace/bảng của catalog
+#   iceberg-rest     REST catalog quản lý metadata bảng Iceberg
+#
+# ĐÂY LÀ THAY ĐỔI KIẾN TRÚC QUAN TRỌNG NHẤT Ở TẦNG INFRA: trước đây
+# compose.duckdb.yml và compose.lakehouse.yml không chia sẻ gì cả, nên dev và prod
+# có hai storage khác nhau. Giờ cả hai chồng lên CÙNG file này -> cùng MinIO, cùng
+# Iceberg catalog. Chỉ execution engine là khác (compose.dev.yml / compose.prod.yml).
+#
+# Dùng qua Makefile:
+#   make ENV=dev  up     ->  -f compose.base.yml -f compose.dev.yml
+#   make ENV=prod up     ->  -f compose.base.yml -f compose.prod.yml
+#
+# Đường dẫn tương đối tính từ GỐC REPO (Makefile chạy với --project-directory .).
+# MỌI giá trị đến từ config/.env.* — không hardcode gì ở đây.
+# ---------------------------------------------------------------------------
+
+# Giữ nguyên tên project cũ: đổi tên sẽ làm docker coi các named volume hiện có
+# (minio-data, iceberg-catalog-db) là của project khác -> mất sạch dữ liệu đã ingest.
+name: hdh-spark-trino
+
+# ---- Khối env dùng lại (YAML anchor) — khai một lần, gắn vào nhiều service ----
+x-s3-env: &s3-env
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_REGION: ${AWS_REGION}
+  S3_ENDPOINT: ${S3_ENDPOINT}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+  WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+  LANDING_PREFIX: ${LANDING_PREFIX}
+
+# Namespace theo tầng: dev và prod khai giá trị khác nhau (dev_bronze vs bronze),
+# nhưng TÊN BIẾN giống hệt nhau -> code và model không biết mình đang ở env nào.
+x-iceberg-env: &iceberg-env
+  ICEBERG_CATALOG_NAME: ${ICEBERG_CATALOG_NAME}
+  ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+  BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
+  SILVER_NAMESPACE: ${SILVER_NAMESPACE}
+  GOLD_NAMESPACE: ${GOLD_NAMESPACE}
+  ENVIRONMENT: ${ENVIRONMENT}
+
+services:
+  # ----------------------- Object storage (S3) -----------------------------
+  minio:
+    image: ${MINIO_IMAGE}
+    container_name: hdh-minio
+    ports:
+      - "${MINIO_API_PORT}:9000"       # S3 API      -> cần cho DuckDB chạy native
+      - "${MINIO_CONSOLE_PORT}:9001"   # Web console -> http://localhost:9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DOMAIN: minio
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [hdh]
+
+  minio-init:
+    image: ${MC_IMAGE}
+    container_name: hdh-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      LANDING_PREFIX: ${LANDING_PREFIX}
+    entrypoint: ["/bin/sh", "/scripts/init-buckets.sh"]
+    volumes:
+      - ./infra/minio:/scripts:ro
+    networks: [hdh]
+
+  # ----------------------- Metastore DB cho Iceberg catalog ----------------
+  # Nơi catalog lưu danh sách namespace/bảng và con trỏ tới metadata file trên MinIO.
+  iceberg-postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: hdh-iceberg-postgres
+    environment:
+      POSTGRES_DB: ${CATALOG_DB_NAME}
+      POSTGRES_USER: ${CATALOG_DB_USER}
+      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD}
+    volumes:
+      - iceberg-catalog-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CATALOG_DB_USER} -d ${CATALOG_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [hdh]
+
+  # ----------------------- Iceberg REST catalog ----------------------------
+  # MỘT catalog cho cả dev lẫn prod. Tách môi trường bằng NAMESPACE, không bằng
+  # bucket — vì một REST catalog chỉ quản lý đúng một warehouse.
+  iceberg-rest:
+    build:
+      context: ./infra/iceberg-rest
+      args:
+        ICEBERG_VERSION: ${ICEBERG_VERSION}
+        POSTGRES_JDBC_VERSION: ${POSTGRES_JDBC_VERSION}
+    image: hdh-iceberg-rest:${ICEBERG_VERSION}
+    container_name: hdh-iceberg-rest
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      iceberg-postgres:
+        condition: service_healthy
+    ports:
+      - "${ICEBERG_REST_PORT}:8181"   # cần cho DuckDB chạy native trên laptop
+    environment:
+      <<: *s3-env
+      CATALOG_WAREHOUSE: s3://${WAREHOUSE_BUCKET}/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: ${S3_ENDPOINT}
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      # Mặc định của image là jdbc:sqlite::memory: -> DB sống theo từng connection,
+      # pool đóng connection là mất sạch bảng đã tạo. Dùng Postgres làm metastore thật.
+      CATALOG_URI: jdbc:postgresql://iceberg-postgres:5432/${CATALOG_DB_NAME}
+      CATALOG_JDBC_USER: ${CATALOG_DB_USER}
+      CATALOG_JDBC_PASSWORD: ${CATALOG_DB_PASSWORD}
+    networks: [hdh]
+
+volumes:
+  minio-data:
+  iceberg-catalog-db:
+
+networks:
+  hdh:
+    name: hdh-net

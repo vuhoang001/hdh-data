@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# OVERLAY MÔI TRƯỜNG DEV — execution engine là DuckDB.
+#
+#   dbt ──► DuckDB ──► Iceberg ──► MinIO        (MinIO/catalog ở compose.base.yml)
+#
+# Chồng lên compose.base.yml:
+#   docker compose -f infra/compose.base.yml -f infra/compose.dev.yml up -d
+#
+# DEV KHÔNG có Spark và KHÔNG có Trino. Một container duy nhất làm cả hai việc:
+#   - ingestion : python ingest.py  -> DuckDB đọc landing Parquet, ghi Iceberg
+#   - transform : dbt build         -> DuckDB ATTACH Iceberg catalog
+# Gộp vào một container vì cả hai chỉ cần đúng một thứ: thư viện duckdb.
+#
+# YAML anchor không đi xuyên file nên các biến env phải khai lại ở đây — cố ý,
+# đổi lấy việc mỗi overlay đọc được độc lập.
+# ---------------------------------------------------------------------------
+
+services:
+  dbt:
+    build:
+      context: ./engine-runners/dbt-runner
+      args:
+        DBT_CORE_VERSION: ${DBT_CORE_VERSION}
+        DBT_DUCKDB_VERSION: ${DBT_DUCKDB_VERSION}
+        DBT_TRINO_VERSION: ${DBT_TRINO_VERSION}
+        DUCKDB_VERSION: ${DUCKDB_VERSION}
+        PYARROW_VERSION: ${PYARROW_VERSION}
+        BOTO3_VERSION: ${BOTO3_VERSION}
+        PYYAML_VERSION: ${PYYAML_VERSION}
+        DBT_PROJECT_DIR: ${DBT_PROJECT_DIR}
+    image: hdh-dbt:${DBT_CORE_VERSION}-${DUCKDB_VERSION}
+    container_name: hdh-dev-runner
+    depends_on:
+      iceberg-rest:
+        condition: service_started
+    # Chạy bằng UID của user host, KHÔNG root — nếu không, target/, logs/,
+    # dbt_packages/ sinh ra trên bind mount sẽ thuộc root:root và IDE không sửa được.
+    user: "${DOCKER_USER:-1000:1000}"
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT}
+      DBT_TARGET: ${DBT_TARGET}
+      INGESTION_ENGINE: ${INGESTION_ENGINE}
+      # S3 / MinIO
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      LANDING_PREFIX: ${LANDING_PREFIX}
+      # Iceberg
+      ICEBERG_CATALOG_NAME: ${ICEBERG_CATALOG_NAME}
+      ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+      BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
+      SILVER_NAMESPACE: ${SILVER_NAMESPACE}
+      GOLD_NAMESPACE: ${GOLD_NAMESPACE}
+      # DuckDB: chỉ là database tạm để ATTACH catalog, KHÔNG phải kho dữ liệu
+      DUCKDB_PATH: ${DUCKDB_PATH}
+      # Ingestion đọc model bronze dùng chung với dbt
+      INGEST_MODELS_DIR: ${DBT_PROJECT_DIR}/bronze
+      INGEST_SOURCES_FILE: ${INGEST_JOBS_DIR}/config/sources.yml
+      SAMPLE_ENABLED: ${SAMPLE_ENABLED}
+      SAMPLE_MONTHS: ${SAMPLE_MONTHS}
+      PYTHONPATH: ${INGEST_JOBS_DIR}
+    volumes:
+      - ./transforms:${DBT_PROJECT_DIR}          # dbt project (models/macros)
+      - ./ingestion:${INGEST_JOBS_DIR}:ro        # code ingestion
+      - ./data:${DBT_DATA_DIR}:ro                # CSV nguồn -> chỉ dùng bởi loader landing
+    working_dir: ${DBT_PROJECT_DIR}
+    command: ["tail", "-f", "/dev/null"]         # giữ container sống để exec vào
+    networks: [hdh]
