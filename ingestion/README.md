@@ -15,11 +15,11 @@ Không có thư mục `connectors/`, và đó là điểm chính của thư mụ
 ## Logic bronze KHÔNG nằm ở đây
 
 Schema, chuẩn hoá text, luật chất lượng, cột dẫn xuất và cột audit của mọi bảng nằm ở
-**`transforms/models/bronze/bronze_<bảng>.sql`** — chính file mà dbt build ở môi trường
+**`ingestion/bronze_specs/bronze_<bảng>.sql`** — chính file mà dbt build ở môi trường
 DuckDB. Spark chạy nguyên văn file đó qua `spark.sql()`.
 
 ```text
-        transforms/models/bronze/bronze_orders.sql      ← MỘT bản logic
+        ingestion/bronze_specs/bronze_orders.sql      ← MỘT bản logic
                         │
         ┌───────────────┴────────────────┐
         ▼                                ▼
@@ -50,7 +50,7 @@ transpile — **đừng tách thành hai bản cài đặt lần nữa**.
 
 | File | Chứa gì | Ai đọc |
 | --- | --- | --- |
-| `transforms/models/bronze/bronze_<bảng>.sql` | **Logic** — schema, chuẩn hoá, luật chất lượng, cột dẫn xuất | dbt **và** Spark |
+| `ingestion/bronze_specs/bronze_<bảng>.sql` | **Logic** — schema, chuẩn hoá, luật chất lượng, cột dẫn xuất | dbt **và** Spark |
 | `ingestion/config/sources.yml` | **Hạ tầng ingest** — nguồn lấy ở đâu, partition Iceberg kiểu gì | chỉ Spark |
 
 Cố ý không chồng lấn. Schema nằm trong file SQL chứ không phải YAML vì **dbt không đọc
@@ -140,7 +140,7 @@ lớn hơn nhiều so với đổi reader.
 ## Thêm một bảng mới
 
 1. Thêm một mục vào `config/sources.yml`
-2. Tạo `../transforms/models/bronze/bronze_<bảng>.sql`
+2. Tạo `../ingestion/bronze_specs/bronze_<bảng>.sql`
 3. `pytest tests -q` — bắt ngay nếu hai bước trên lệch nhau
 4. `make lake-ingest-<bảng>`
 

@@ -6,7 +6,7 @@ Spark) và test cũ có nhiệm vụ canh cho chúng khỏi lệch nhau. Nhưng 
 `_invalid_reason`, không so được điều kiện bên trong — sửa `< 0` thành `<= 0` ở một bên thì
 test vẫn xanh.
 
-Giờ chỉ còn MỘT bản: transforms/models/bronze/bronze_<bảng>.sql, và cả dbt lẫn Spark cùng
+Giờ chỉ còn MỘT bản: ingestion/bronze_specs/bronze_<bảng>.sql, và cả dbt lẫn Spark cùng
 chạy nó. Lệch không còn khả năng xảy ra — không phải "được phát hiện sớm hơn" mà là không
 tồn tại. Nên test đổi nhiệm vụ: từ *dò lệch* sang *kiểm khai báo đúng khuôn mà cả hai
 engine cùng đọc được*.
@@ -17,7 +17,7 @@ tức nó kiểm đúng đoạn code mà Spark chạy lúc thật, không phải
 Hai module đó cố ý không import pyspark ở cấp module, nên test này chạy được trong CI nhẹ
 (chỉ cần pytest + pyyaml, không cần cài Spark 300MB):
 
-    pytest tests -q
+    pytest tests/unit -q
 """
 import re
 import sys
@@ -31,7 +31,7 @@ sys.path.insert(0, str(REPO_ROOT / "ingestion"))
 from common import spec, sql_model  # noqa: E402  (sau khi đã chỉnh sys.path)
 
 SOURCES_FILE = REPO_ROOT / "ingestion" / "config" / "sources.yml"
-MODELS_DIR = REPO_ROOT / "transforms" / "bronze"
+MODELS_DIR = REPO_ROOT / "ingestion" / "bronze_specs"
 DATA_DIR = REPO_ROOT / "data"
 IO_FILE = REPO_ROOT / "ingestion" / "common" / "io.py"
 
@@ -45,7 +45,7 @@ def load_model(table):
 
 # ---------------------------------------------------------------------------
 # Đăng ký nguồn <-> model SQL: thiếu một bên thì hoặc bảng không bao giờ được
-# ingest, hoặc `make lake-ingest` chết giữa chừng sau khi đã dựng stack vài phút.
+# ingest, hoặc `make ingest` chết giữa chừng sau khi đã dựng stack vài phút.
 # ---------------------------------------------------------------------------
 def test_dang_ky_khong_rong():
     assert TABLES, "sources.yml không khai báo bảng nào"
@@ -160,6 +160,6 @@ def test_khong_con_connector_rieng_le():
     connectors = REPO_ROOT / "ingestion" / "connectors"
     assert not connectors.exists(), (
         f"{connectors} đã xuất hiện trở lại. Logic bronze phải nằm DUY NHẤT trong "
-        f"transforms/models/bronze/bronze_<bảng>.sql — Spark chạy chính file đó qua "
+        f"ingestion/bronze_specs/bronze_<bảng>.sql — Spark chạy chính file đó qua "
         f"ingestion/ingest.py."
     )

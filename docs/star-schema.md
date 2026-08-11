@@ -1,6 +1,6 @@
 # Star schema — thiết kế và lý do
 
-Tài liệu này giải thích star schema trong `models/gold/`: **mỗi bảng để làm gì, mỗi quyết định
+Tài liệu này giải thích star schema trong `models/marts/`: **mỗi bảng để làm gì, mỗi quyết định
 vì sao chọn thế**. Mọi con số đều lấy từ dữ liệu thật.
 
 > **Cần lý thuyết nền?** Đọc [Star schema — lý thuyết thiết kế](star-schema-ly-thuyet.md):
@@ -409,5 +409,5 @@ hàng theo category" chắc chắn dùng cùng một định nghĩa category —
 điều một mớ report rời rạc không bao giờ đảm bảo được.
 
 Khi thêm fact mới, đọc lại [Thêm bảng mới](them-bang-moi.md) — quy trình giống hệt, chỉ khác
-là model nằm ở `models/gold/` và bắt đầu bằng việc viết một câu: *"một dòng trong bảng này
+là model nằm ở `models/marts/` và bắt đầu bằng việc viết một câu: *"một dòng trong bảng này
 nghĩa là gì?"*

@@ -8,7 +8,7 @@ Hậu tố `!` đánh dấu cột BẮT BUỘC:
     'order_id': 'integer!'   -> Iceberg `required`, Spark nullable=False
 
 Vì sao module này tồn tại: trước đây bảng map nằm ở HAI nơi
-(transforms/macros/bronze_helpers.sql và common/sql_model.py), kèm comment cảnh báo
+(dbt/macros/bronze_helpers.sql và common/sql_model.py), kèm comment cảnh báo
 "thêm kiểu mới phải sửa CẢ HAI". Sau khi thêm engine DuckDB và loader, nó suýt thành BỐN
 nơi. Một comment cảnh báo không phải là cơ chế — gom về một file mới là.
 

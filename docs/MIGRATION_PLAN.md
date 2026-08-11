@@ -3,7 +3,10 @@
 > Đọc [CURRENT_ARCHITECTURE.md](CURRENT_ARCHITECTURE.md) và
 > [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md) trước.
 >
-> **Trạng thái: chờ `APPROVED`.** Chưa có dòng code nào của repo bị sửa.
+> **Trạng thái: ĐÃ TRIỂN KHAI.** Kiến trúc mục tiêu đã được implement và chạy xanh — môi
+> trường dev (DuckDB → Iceberg → MinIO) chạy trọn `make pipeline` từ catalog trống ra
+> **PASS=209, ERROR=0**. Tài liệu này giữ lại làm **bản ghi thiết kế theo phase**; đường dẫn
+> file/target trong đó phản ánh giai đoạn di trú, còn trạng thái hiện tại xem [README](../README.md).
 
 ---
 
@@ -135,12 +138,12 @@ không bị ảnh hưởng dù revert ở bất kỳ điểm nào.
 **Goal.** Xoá rẽ nhánh môi trường khỏi business logic. Sau phase này DEV chạy DuckDB trên
 Iceberg thật.
 
-**Files.** `transforms/macros/bronze_ref.sql` (**xoá**) ·
-`transforms/macros/duckdb_iceberg_materializations.sql` (mới) ·
-`transforms/macros/bronze_helpers.sql` (sửa) · `transforms/dbt_project.yml` ·
-`transforms/profiles.yml` · `transforms/models/silver/_sources.yml` ·
-6 file `models/silver/*.sql` (`{{ bronze(x) }}` → `{{ source('bronze', x) }}`) ·
-13 file `models/bronze/*.sql` (chuyển vai trò: không còn là dbt model được build)
+**Files.** `dbt/macros/bronze_ref.sql` (**xoá**) ·
+`dbt/macros/duckdb_iceberg_materializations.sql` (mới) ·
+`dbt/macros/bronze_helpers.sql` (sửa) · `dbt/dbt_project.yml` ·
+`dbt/profiles.yml` · `dbt/models/staging/_sources.yml` ·
+6 file `models/staging/*.sql` (`{{ bronze(x) }}` → `{{ source('bronze', x) }}`) ·
+13 file `ingestion/bronze_specs/*.sql` (chuyển vai trò: không còn là dbt model được build)
 
 **Changes.**
 1. **D1** — bronze là `source` ở mọi target; xoá `bronze()`, xoá `+enabled`, xoá `enabled:`.
@@ -217,7 +220,7 @@ credential, network). CLI là **wrapper mỏng gọi lại Makefile target** —
 **Goal.** Metadata gom một chỗ; test sinh ra từ contract thay vì chép tay.
 
 **Files.** `config/contracts/*.yml` (13 file mới) · `scripts/gen_dbt_schema.py` (mới) ·
-`transforms/models/*/_*.yml` (sinh ra) · `tests/unit/test_contracts.py` (mới)
+`dbt/models/*/_*.yml` (sinh ra) · `tests/unit/test_contracts.py` (mới)
 
 **Changes.** Contract theo mẫu TARGET §6 · script sinh YAML dbt từ contract ·
 test kiểm contract ↔ model SQL ↔ YAML khớp nhau.
@@ -358,8 +361,8 @@ GIỮ NGUYÊN VỊ TRÍ, SỬA NỘI DUNG
   ingestion/ingest.py                        → + --engine, --mode
   ingestion/config/sources.yml               → + watermark, contract ref
   ingestion/common/{config,spec,sql_model,io,iceberg}.py   → gần như giữ nguyên
-  transforms/models/{bronze,silver,gold}/    → giữ tên tầng (D7)
-  transforms/macros/portable_dates.sql       → giữ
+  dbt/models/{bronze,silver,gold}/    → giữ tên tầng (D7)
+  dbt/macros/portable_dates.sql       → giữ
   tests/test_bronze_models.py                → tests/unit/test_bronze_models.py
 
 CHUYỂN CHỖ
@@ -373,14 +376,14 @@ VIẾT MỚI
   ingestion/engines/base.py                          IngestionEngine interface
   ingestion/engines/duckdb_engine.py                 DEV ingestion
   ingestion/load_landing.py                          CSV/DB → landing Parquet
-  transforms/macros/duckdb_iceberg_materializations.sql   D3
+  dbt/macros/duckdb_iceberg_materializations.sql   D3
   config/contracts/*.yml                             13 data contract
   scripts/gen_dbt_schema.py                          contract → dbt YAML
   platform                                           CLI
   tests/integration/ · tests/parity/                 spec §25
 
 XOÁ (chỉ ở Phase 12, sau khi cái mới đã xanh)
-  transforms/macros/bronze_ref.sql                   D1
+  dbt/macros/bronze_ref.sql                   D1
   infra/local/compose.duckdb.yml                     đã tách
   Makefile: target duckdb-* / lake-* cũ              thay bằng ENV=dev|prod
 ```
@@ -392,7 +395,7 @@ XOÁ (chỉ ở Phase 12, sau khi cái mới đã xanh)
 | # | Câu hỏi | Đề xuất của tôi |
 | --- | --- | --- |
 | 1 | Giữ `bronze/silver/gold` hay đổi sang `staging/intermediate/marts`? | **Giữ** (D7) — đổi tốn 40+ file, giá trị chức năng bằng 0 |
-| 2 | Giữ thư mục `transforms/` hay đổi thành `dbt/`? | **Giữ** — README giải thích có chủ đích: `ingestion` = E-L, `transforms` = T |
+| 2 | Giữ thư mục `dbt/` hay đổi thành `dbt/`? | **Giữ** — README giải thích có chủ đích: `ingestion` = E-L, `transforms` = T |
 | 3 | Có làm `QueryEngine` tổng quát cho tầng transform không? | **Không** (D8) — dbt đã là abstraction đó; thêm nữa là over-abstraction |
 | 4 | silver chuyển sang `table` — chấp nhận chứ? | **Bắt buộc** (D2), không có lựa chọn khác |
 | 5 | Có dừng xin xác nhận lần hai trước Phase 4 không? | **Nên** — đây là phase không quay lui dễ |
@@ -402,6 +405,8 @@ XOÁ (chỉ ở Phase 12, sau khi cái mới đã xanh)
 
 ## Trạng thái
 
-**Phase 0 hoàn tất.** Ba tài liệu đã có. Chưa sửa dòng code nào của repo.
-
-Đang chờ `APPROVED` để bắt đầu Phase 1.
+**Đã triển khai.** Kiến trúc mục tiêu đã vào code: `config/.env.{shared,dev,prod}`, hạ tầng
+dùng chung `infra/compose.{base,dev,prod}.yml`, hai engine ingestion (`ingestion/engines/`),
+bronze là `source()` ở mọi target, silver = `table`, macro override materialization + hook
+tạo namespace cho DuckDB-Iceberg. `make ENV=dev pipeline` chạy xanh từ catalog trống
+(PASS=209, ERROR=0). Xem [README](../README.md) cho trạng thái vận hành hiện tại.

@@ -40,7 +40,7 @@ RUN test -n "${DBT_CORE_VERSION}" && test -n "${DUCKDB_VERSION}" && \
 # package-lock.yml — sẽ thuộc root:root, khiến IDE và `rm` của bạn không đụng được.
 #
 # Hệ quả của việc bỏ root: /root/.dbt không còn đọc được, nên profiles.yml lấy từ chính
-# thư mục project (DBT_PROFILES_DIR) — nó vốn đã nằm ở transforms/profiles.yml.
+# thư mục project (DBT_PROFILES_DIR) — nó vốn đã nằm ở dbt/profiles.yml.
 ENV DBT_PROFILES_DIR=${DBT_PROJECT_DIR}
 
 # dbt ghi ~/.dbt/.user.yml (thống kê ẩn danh). Trỏ HOME vào /tmp để nó không cần ghi vào

@@ -1,7 +1,7 @@
 {#
     Bỏ tiền tố 'bronze_' khỏi TÊN BẢNG (không phải tên file model).
 
-    Model để tên file bronze_orders (rõ ràng trong models/bronze/), nhưng bảng sinh ra nên là
+    Model để tên file bronze_orders (rõ ràng trong ingestion/bronze_specs/), nhưng bảng sinh ra nên là
     bronze.orders — khớp đúng namespace Spark ghi ở môi trường Trino (iceberg.bronze.orders).
     Nhờ đó câu query `select * from bronze.orders` chạy y hệt ở cả hai môi trường.
 

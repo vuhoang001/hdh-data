@@ -18,7 +18,7 @@
 services:
   dbt:
     build:
-      context: ./engine-runners/dbt-runner
+      context: ./infra/images/dbt-runner
       args:
         DBT_CORE_VERSION: ${DBT_CORE_VERSION}
         DBT_DUCKDB_VERSION: ${DBT_DUCKDB_VERSION}
@@ -56,15 +56,16 @@ services:
       GOLD_NAMESPACE: ${GOLD_NAMESPACE}
       # DuckDB: chỉ là database tạm để ATTACH catalog, KHÔNG phải kho dữ liệu
       DUCKDB_PATH: ${DUCKDB_PATH}
-      # Ingestion đọc model bronze dùng chung với dbt
-      INGEST_MODELS_DIR: ${DBT_PROJECT_DIR}/bronze
+      # Đặc tả bronze sống trong ingestion/ (chỉ ingestion chạy chúng), có sẵn qua mount
+      # ./ingestion bên dưới — không cần mount riêng.
+      INGEST_MODELS_DIR: ${INGEST_JOBS_DIR}/bronze_specs
       INGEST_SOURCES_FILE: ${INGEST_JOBS_DIR}/config/sources.yml
       SAMPLE_ENABLED: ${SAMPLE_ENABLED}
       SAMPLE_MONTHS: ${SAMPLE_MONTHS}
       PYTHONPATH: ${INGEST_JOBS_DIR}
     volumes:
-      - ./transforms:${DBT_PROJECT_DIR}          # dbt project (models/macros)
-      - ./ingestion:${INGEST_JOBS_DIR}:ro        # code ingestion
+      - ./dbt:${DBT_PROJECT_DIR}                 # dbt project (models/macros)
+      - ./ingestion:${INGEST_JOBS_DIR}:ro        # code ingestion + bronze_specs
       - ./data:${DBT_DATA_DIR}:ro                # CSV nguồn -> chỉ dùng bởi loader landing
     working_dir: ${DBT_PROJECT_DIR}
     command: ["tail", "-f", "/dev/null"]         # giữ container sống để exec vào

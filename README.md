@@ -1,33 +1,77 @@
 # hdh-data — Lakehouse ELT pipeline
 
-Pipeline ELT học Data Engineering, chạy được trên **hai môi trường độc lập** với **cùng một
-bộ model dbt**:
+Pipeline ELT học Data Engineering. **MỘT bộ code, MỘT storage, HAI execution engine.**
 
-| Môi trường | Engine | Khi nào dùng | Cần gì | Thời gian |
+> Storage, catalog, table format và business logic là MỘT. Chỉ execution engine là hai.
+
+| Môi trường | Engine | Nguồn | Namespace | Khi nào dùng |
 | --- | --- | --- | --- | --- |
-| **DuckDB** (nhẹ) | dbt-duckdb | Dev nhanh, chạy CI | Chỉ Docker | ~vài giây |
-| **Lakehouse** | Spark + Trino + Iceberg + MinIO | Giống production, dữ liệu trên object storage | Docker + mạng (tải jar) | ~vài phút |
+| **dev** (`ENV=dev`, mặc định) | DuckDB | sample (6 tháng) | `dev_bronze/dev_silver/dev_gold` | Dev nhanh, chạy CI |
+| **prod** (`ENV=prod`) | Trino (+ Spark ingest) | full | `bronze/silver/gold` | Giống production |
 
-Cùng logic bronze → silver → gold, chỉ khác engine thực thi. Chọn môi trường bằng tiền tố
-lệnh `make`: `duckdb-*` hoặc `lake-*`.
+Cả hai môi trường ghi/đọc **cùng** một storage: bảng **Iceberg** trên **MinIO**, metadata qua
+**Iceberg REST catalog** (metastore Postgres). Đổi môi trường bằng một biến — `make ENV=prod` —
+và nó đổi engine + đổi nguồn + đổi namespace, **không** đổi một dòng business logic nào.
 
 ```text
-                 data/*.csv  (13 file nguồn, dùng chung)
-                      │
-        ┌─────────────┴──────────────┐
-        ▼                            ▼
-  ┌───────────────┐            ┌──────────────────────────────────────┐
-  │  MÔI TRƯỜNG 1 │            │           MÔI TRƯỜNG 2               │
-  │   DuckDB      │            │              Lakehouse               │
-  │               │            │                                      │
-  │ dbt-duckdb:   │            │ Spark ─ingest→ Iceberg(bronze)       │
-  │  bronze(CSV)  │            │           trên MinIO (S3)            │
-  │   → silver    │            │      ↑ metadata: Iceberg REST catalog│
-  │   → gold      │            │ dbt ─(qua Trino)→ silver → gold      │
-  └───────┬───────┘            └──────────────────┬───────────────────┘
-          ▼                                       ▼
-   file hdh.duckdb                      Trino SQL trên Iceberg
+              data/*.csv  (13 file nguồn, dùng chung)
+                    │  load_landing.py  (→ Parquet trên MinIO)
+                    ▼
+        s3://warehouse/<landing>/…      landing zone (immutable)
+                    │  ingest.py  ── engine đổi theo ENV ──┐
+                    │     dev: DuckDB   ·   prod: Spark     │  chạy CHÍNH ingestion/bronze_specs/bronze_<t>.sql
+                    ▼                                       │
+   ┌───────────────────────────────────────────────────────┴───┐
+   │            ICEBERG trên MinIO  (MỘT storage)               │
+   │     namespace bronze → silver → gold                       │
+   │              ▲                    ▲                         │
+   │              │        dbt build (1 bộ model, 2 target)      │
+   │      Iceberg REST catalog (Postgres metastore)             │
+   └──────────────┬────────────────────────────────────────────┘
+        dev: DuckDB │ prod: Trino     ← chỉ execution engine là khác
 ```
+
+Bằng chứng: từ catalog trống, `make ENV=dev pipeline` ingest 13 bảng bronze bằng DuckDB rồi
+`dbt build` ra silver/gold — **PASS=209, ERROR=0**. Cùng bộ model đó chạy trên Trino ở prod.
+
+---
+
+## Bắt đầu
+
+**Yêu cầu:** Docker + Docker Compose. Lần đầu chạy sẽ build image dbt/iceberg-rest (và
+image Spark ở prod) + tải jar → cần mạng.
+
+```bash
+make setup            # tạo config/.env.local, build image, cài dbt_utils
+make pipeline         # landing → bronze → silver → gold + test   (ENV=dev mặc định)
+make test             # test cấu trúc repo + test dữ liệu
+```
+
+Mọi target đều nhận `ENV=`. Chạy production (Trino + Spark) trên cùng máy:
+
+```bash
+make ENV=prod up
+make ENV=prod pipeline
+```
+
+```bash
+make                  # danh sách lệnh kèm mô tả
+make env-check        # in cấu hình đang có hiệu lực (engine, namespace, bucket…)
+make ENV=prod env-check
+```
+
+Vòng đời hạ tầng: `make up` · `make down` (giữ dữ liệu) · `make clean` (xoá volume) ·
+`make ps` · `make logs`.
+
+### Cổng mở ra host
+
+| Service | Vai trò | Cổng (localhost) |
+| --- | --- | --- |
+| **MinIO** | Object storage (S3) lưu file Iceberg | 9000 API · 9001 console |
+| **iceberg-rest** | REST catalog quản lý metadata Iceberg | 8181 |
+| **Trino** *(chỉ prod)* | Engine truy vấn SQL trên Iceberg | 8080 |
+
+MinIO console: <http://localhost:9001> (user/pass trong `config/.env.<env>`), bucket `warehouse`.
 
 ---
 
@@ -37,230 +81,161 @@ Tách theo **tốc độ thay đổi** và **tính di động**, không theo cô
 
 | Thư mục | Đổi bao lâu một lần | Khi lên production |
 | --- | --- | --- |
-| `ingestion/` · `transforms/` | hàng ngày — thêm bảng, sửa rule | **giữ nguyên 100%** |
-| `engine-runners/` | vài tháng — nâng version Spark/dbt | thay bằng EMR, dbt Cloud |
-| `infra/` | vài tháng — thêm service | thay bằng Terraform / k8s |
+| `ingestion/` · `dbt/` | hàng ngày — thêm bảng, sửa rule | **giữ nguyên 100%** |
+| `infra/images/` | vài tháng — nâng version Spark/dbt | thay bằng EMR, dbt Cloud |
+| `infra/` · `config/` | vài tháng — thêm service, đổi endpoint | thay bằng Terraform / k8s / secret manager |
 
-`ingestion` + `transforms` chính là **E-L** và **T** của ELT — tên thư mục nói ra kiến trúc.
-
-Đây cũng là lý do **dbt nằm ở hai chỗ có chủ đích**: `transforms/` là *code* (sửa mỗi ngày),
-`engine-runners/dbt-runner/` là *runtime image* (gần như không đụng). Gộp lại nghĩa là mỗi
-lần thêm một model SQL lại phải nhìn thấy Dockerfile.
-
+`ingestion` + `dbt` chính là **E-L** và **T** của ELT — tên thư mục nói ra kiến trúc.
 Mỗi thư mục có README riêng giải thích quyết định thiết kế bên trong nó.
 
 ```text
 hdh-data/
-├── .env / .env.example        # ★ NGUỒN SỰ THẬT DUY NHẤT cho mọi cấu hình
-├── Makefile                   # điều phối: duckdb-* và lake-*
+├── Makefile                   # điều phối theo ENV: make ENV=dev|prod <target>
+├── config/                    # ★ NGUỒN SỰ THẬT cho mọi cấu hình
+│   ├── .env.shared            #   version, tên catalog/bucket — giống mọi env
+│   ├── .env.dev               #   DuckDB · sample · namespace dev_*
+│   ├── .env.prod              #   Trino/Spark · full · namespace bronze/silver/gold
+│   └── .env.local.example     #   mẫu cho secret thật + override cá nhân (→ .env.local, gitignore)
 ├── data/                      # 13 CSV nguồn (dùng chung 2 môi trường)
 │
-├── infra/local/               # docker compose 2 stack + init MinIO + Iceberg REST
+├── infra/                     # tất cả hạ tầng Docker: compose + build image + init
+│   ├── compose.base.yml       #   ★ minio · postgres · iceberg-rest — DÙNG CHUNG dev+prod
+│   ├── compose.dev.yml        #   + container dbt (DuckDB)
+│   ├── compose.prod.yml       #   + trino + spark + dbt
+│   ├── images/                #   ★ Dockerfile build image từng engine: dbt · spark · trino
+│   ├── minio/init-buckets.sh  #   tạo bucket + prefix landing
+│   └── iceberg-rest/          #   Dockerfile catalog
 │
-├── ingestion/                 # nguồn → bronze Iceberg (chỉ môi trường lakehouse)
-│   ├── ingest.py              #   ★ điểm vào DUY NHẤT, chạy chung cho mọi bảng
+├── ingestion/                 # nguồn → landing → bronze Iceberg (E-L)
+│   ├── ingest.py              #   ★ điểm vào DUY NHẤT, mọi bảng, mọi engine
+│   ├── load_landing.py        #   CSV → Parquet trên landing zone (+ sampling ở dev)
 │   ├── config/sources.yml     #   ★ đăng ký 13 bảng — Makefile sinh target từ đây
-│   └── common/                #   hạ tầng: config, đọc model SQL, khung job, IO, Iceberg
+│   ├── bronze_specs/          #   ★ đặc tả bronze SQL (schema + luật) — engine ingest chạy
+│   ├── engines/               #   base · duckdb_engine (dev) · spark_engine (prod)
+│   └── common/                #   config · spec · sql_model · io · job · errors · logging
 │
-├── transforms/                # dbt project: bronze → silver → gold
-│   ├── profiles.yml           #   2 target: duckdb + trino, giá trị từ .env
-│   └── models/{bronze,silver,gold}/
+├── dbt/                       # dbt project (T): staging → marts
+│   ├── profiles.yml           #   2 target: dev (duckdb) + prod (trino), giá trị từ env
+│   ├── dbt_project.yml        #   on-run-start tạo namespace silver/gold; severity theo tầng
+│   ├── models/staging/        #   tầng SILVER: làm sạch, lọc _is_valid
+│   ├── models/marts/          #   tầng GOLD: star schema (dim/fact) + tổng hợp
+│   └── macros/                #   ensure_layer_schemas · duckdb_iceberg_materializations · portable_dates
 │
-├── engine-runners/            # image + cấu hình của từng engine
-│   ├── spark-runner/          #   Dockerfile · entrypoint · spark-defaults.conf.tmpl
-│   ├── dbt-runner/            #   1 image, 2 adapter (duckdb + trino)
-│   └── trino-runner/catalog/  #   catalog Iceberg cho Trino
-│
-├── tests/                     # test cấu trúc repo, chạy không cần Docker
-├── docs/                      # thiết kế star schema, mô hình dữ liệu, hướng dẫn
-└── .github/workflows/ci.yml   # CI: chạy pipeline DuckDB + test trên mỗi PR
+├── tests/unit/                # test cấu trúc repo, chạy không cần Docker
+├── docs/                      # thiết kế star schema, mô hình dữ liệu, kiến trúc, hướng dẫn
+└── .github/workflows/ci.yml   # CI: chạy trọn pipeline dev + test trên mỗi PR
 ```
 
-Điều phối hiện do `Makefile` đảm nhiệm. Khi cần chạy theo lịch, retry riêng một bảng, hay
-backfill thì mới cần tới Airflow/Dagster — lúc đó DAG nên **gọi lại đúng các target Makefile
-đang có** và lấy danh sách bảng từ `ingestion/config/sources.yml`, để chạy tay và chạy theo
-lịch không bao giờ lệch nhau.
+**Vì sao bronze SQL nằm ở `ingestion/bronze_specs/` chứ không phải `dbt/models/`:** chúng
+không còn là dbt model. Cùng file `.sql` đó được **hai** engine ingestion chạy (DuckDB ở dev,
+Spark ở prod) để ghi bronze vào Iceberg; dbt chỉ **đọc** bronze qua `source()`. Để chúng trong
+`models/` sẽ khiến dbt cố build lại thứ mà tầng ingestion vừa ghi.
 
 ### Cấu hình quản lý ở đâu
 
-Nguyên tắc: **`.env` giữ GIÁ TRỊ, mỗi thành phần giữ FILE cấu hình của riêng nó.**
-Không endpoint, bucket, hay version nào bị hardcode hai lần.
+Nguyên tắc: **`config/.env.*` giữ GIÁ TRỊ, mỗi thành phần giữ FILE cấu hình của riêng nó.**
+Không endpoint, bucket, hay version nào bị hardcode hai lần. Thứ tự nạp:
+`.env.shared` → `.env.<env>` → `.env.local` (gitignore, thắng sau cùng).
 
 | File | Nội suy bằng | Ai đọc |
 | --- | --- | --- |
-| `infra/local/compose.*.yml` | `${VAR}` | docker compose |
-| `engine-runners/trino-runner/catalog/iceberg.properties` | `${ENV:VAR}` | Trino (sẵn có) |
-| `engine-runners/spark-runner/spark-defaults.conf.tmpl` | `${VAR}` | entrypoint render lúc khởi động |
-| `transforms/profiles.yml` · `dbt_project.yml` | `{{ env_var('VAR') }}` | dbt |
-| `ingestion/common/config.py` | `os.environ` | code Spark |
-| `Makefile` | `-include .env` | make |
+| `infra/compose.*.yml` | `${VAR}` | docker compose |
+| `infra/images/trino-runner/catalog/iceberg.properties` | `${ENV:VAR}` | Trino |
+| `infra/images/spark-runner/spark-defaults.conf.tmpl` | `${VAR}` | entrypoint render lúc khởi động |
+| `dbt/profiles.yml` · `dbt_project.yml` | `{{ env_var('VAR') }}` | dbt |
+| `ingestion/common/config.py` | `os.environ` | code DuckDB/Spark |
+| `Makefile` | `-include config/.env.*` | make |
 
-Đổi `WAREHOUSE_BUCKET` một chỗ trong `.env` là Spark, Trino, Iceberg REST và MinIO cùng đổi.
-
-```bash
-make env-check      # in giá trị đang có hiệu lực
-```
+Đổi `WAREHOUSE_BUCKET` một chỗ là Spark, Trino, Iceberg REST và MinIO cùng đổi. Secret ở
+production **không** sửa `.env.prod` — inject qua secret manager (mọi biến đọc qua `os.environ`
+/ `${VAR}` nên inject kiểu gì cũng chạy).
 
 ---
 
-## Bắt đầu
+## Một dbt project, hai engine — không nhân đôi logic
 
-```bash
-cp .env.example .env     # đổi mật khẩu trước khi dùng thật
-make                     # in danh sách lệnh kèm mô tả
-```
+Business logic viết **một lần**, chạy đúng ở cả hai engine. Ba lớp adapter mỏng che phần khác biệt:
 
-**Yêu cầu:** Docker + Docker Compose. Riêng môi trường lakehouse, lần đầu chạy sẽ build
-image Spark/dbt và tải jar Iceberg → cần mạng.
+- **bronze là `source()` ở mọi target** ([models/_sources.yml](dbt/models/_sources.yml)) —
+  bronze do tầng ingestion ghi vào Iceberg ở **cả hai** môi trường, nên dbt luôn đọc qua
+  `source('bronze', …)`. Đồ thị model giống hệt nhau ở dev và prod (không còn `enabled` theo target).
+- **[macros/portable_dates.sql](dbt/macros/portable_dates.sql)** — gom vài hàm lệch nhau
+  giữa Trino và DuckDB (`date_format`↔`strftime`, `day_of_week`↔`isodow`, `week_of_year`↔`week`).
+- **[macros/duckdb_iceberg_materializations.sql](dbt/macros/duckdb_iceberg_materializations.sql)** —
+  override materialization `table` cho DuckDB thành DROP+CREATE (DuckDB-Iceberg chưa hỗ trợ
+  `CREATE OR REPLACE` và rename-trong-transaction). Chỉ áp ở dev; prod dùng bản mặc định của Trino.
+- **[macros/ensure_layer_schemas.sql](dbt/macros/ensure_layer_schemas.sql)** — `on-run-start`
+  tạo sẵn namespace silver/gold (dbt tự tạo schema không ổn định trên catalog Iceberg REST).
 
-### Môi trường 1 — DuckDB (khuyến nghị để bắt đầu)
-
-Toàn bộ pipeline chạy trong **một container**. Không MinIO, không Iceberg, không Trino,
-không Spark.
-
-```bash
-make duckdb-up       # 1) build image + bật container (lần đầu ~30s)
-make duckdb-deps     # 2) cài dbt_utils (chạy 1 lần)
-make duckdb-run      # 3) dbt build: bronze → silver → gold + test (~7s)
-make duckdb-query    # 4) xem thử bảng gold
-
-make duckdb-shell    # liệt kê các bảng trong file hdh.duckdb
-make duckdb-down     # dừng (giữ file .duckdb)
-make duckdb-clean    # dừng + xoá volume (mất file .duckdb)
-```
-
-### Môi trường 2 — Lakehouse
-
-| Service | Vai trò | Cổng (localhost) |
-| --- | --- | --- |
-| **MinIO** | Object storage (S3) lưu file Iceberg | 9000 API / 9001 console |
-| **iceberg-postgres** | Metastore của catalog | — |
-| **iceberg-rest** | REST catalog quản lý metadata Iceberg | 8181 |
-| **Trino** | Engine truy vấn SQL trên Iceberg | 8080 |
-| **Spark** | Ingest CSV → bronze | — |
-| **dbt** | Transform + test silver/gold qua Trino | — |
-
-```bash
-make lake-up         # 1) bật toàn bộ stack (lần đầu build image + tải jar)
-make lake-ps         #    đợi tới khi trino/spark/dbt ở trạng thái "Up"
-
-make lake-ingest     # 2) Spark: CSV → 13 bảng bronze (~2 phút)
-                     #    hoặc từng bảng: make lake-ingest-orders
-
-make lake-dbt-deps   # 3) cài dbt_utils (chạy 1 lần)
-make lake-dbt        #    dbt build silver + gold + test (--target trino)
-
-make lake-query      # 4) truy vấn kết quả bằng Trino
-```
-
-Kiểm tra thủ công:
-
-- **MinIO console:** <http://localhost:9001> — user/pass trong `.env`, bucket `warehouse`.
-- **Trino CLI:** `make lake-trino`
-
-  ```sql
-  SHOW SCHEMAS FROM iceberg;
-  SELECT * FROM iceberg.bronze.orders LIMIT 20;
-  SELECT * FROM iceberg.analytics.fact_order_items LIMIT 20;
-  SELECT * FROM iceberg.analytics.gold_revenue_daily ORDER BY order_date DESC LIMIT 20;
-  ```
-
-- **Spark SQL:** `make lake-spark-sql`
-
-```bash
-make lake-down       # dừng, giữ dữ liệu
-make lake-clean      # dừng + xoá volume MinIO (mất sạch dữ liệu)
-```
-
----
-
-## Bí quyết dùng chung 1 project dbt cho 2 engine
-
-Điểm mấu chốt để **không nhân đôi** logic silver/gold: một lớp macro mỏng che đi phần khác
-biệt giữa hai engine.
-
-- **`{{ bronze('orders') }}`** ([macros/bronze_ref.sql](transforms/macros/bronze_ref.sql)) —
-  silver trỏ về đúng nguồn bronze theo môi trường:
-  - target `duckdb` → `ref('bronze_orders')` (bronze là dbt model đọc CSV)
-  - target `trino`  → `source('bronze', 'orders')` (bronze do Spark ghi Iceberg)
-- **macro ngày tháng** ([macros/portable_dates.sql](transforms/macros/portable_dates.sql)) —
-  gom vài hàm lệch nhau giữa Trino và DuckDB (`date_format`↔`strftime`,
-  `day_of_week`↔`isodow`, `week_of_year`↔`week`).
-- **bronze layer** chỉ build khi `target=duckdb` (khai báo `enabled` ở
-  [dbt_project.yml](transforms/dbt_project.yml)); ở target `trino` bronze do Spark lo, nên
-  source Iceberg được tắt khi chạy DuckDB.
-
-Nhờ vậy mọi model silver/gold viết **một lần**, chạy đúng ở cả hai nơi.
-Chi tiết: [transforms/README.md](transforms/README.md).
+Chi tiết: [dbt/README.md](dbt/README.md).
 
 ## Layer dữ liệu
 
-Mỗi layer chịu trách nhiệm một việc: bronze **mô tả** nguồn, silver **quyết định** dữ liệu nào
-dùng được, gold **trả lời** câu hỏi business.
+Mỗi layer một việc: bronze **mô tả** nguồn, silver **quyết định** dữ liệu nào dùng được,
+gold **trả lời** câu hỏi business.
 
-- **bronze** — chuẩn hoá text, gắn cờ `_is_valid` + `_invalid_reason` + audit; giữ nguyên số
-  dòng nguồn. **Một bản logic duy nhất** trong `transforms/models/bronze/*.sql` — dbt chạy
-  nó ở DuckDB, Spark chạy chính nó ở lakehouse.
-  13 bảng: `orders` (646.945), `order_items` (714.669), `payments`, `shipments`, `reviews`,
-  `returns`, `inventory`, `customers` (121.930), `geography` (39.948), `products` (2.412),
-  `promotions` (50), `sales_daily`, `web_traffic`.
+- **bronze** — chuẩn hoá text, gắn cờ `_is_valid` + `_invalid_reason` + cột audit
+  (`_source_file`, `_ingested_at`); giữ nguyên số dòng nguồn. **Một bản logic duy nhất** ở
+  `ingestion/bronze_specs/bronze_<t>.sql` — DuckDB chạy nó ở dev, Spark chạy chính nó ở prod.
+  13 bảng: `orders`, `order_items`, `payments`, `shipments`, `reviews`, `returns`, `inventory`,
+  `customers`, `geography`, `products`, `promotions`, `sales_daily`, `web_traffic`.
 
-  > **`sales_daily` không khớp doanh thu tính từ `order_items`** — đây là hai nguồn số độc lập;
+  > **`sales_daily` không khớp doanh thu tính từ `order_items`** — hai nguồn số độc lập;
   > chênh lệch là thứ cần điều tra, đừng "sửa" cho khớp.
-- **silver** — lọc theo `_is_valid`, bỏ cột kỹ thuật, thêm cột dẫn xuất. Là **view** (rẻ, luôn
-  phản ánh bronze mới nhất): `silver_orders`, `silver_order_items`, `silver_customers`,
-  `silver_products`, `silver_geography`, `silver_promotions`.
-- **gold** — star schema, vật liệu hoá thành **table**: `dim_customer`, `dim_product`,
-  `dim_promotion`, `dim_date`, `fact_order_items`, và 2 bảng tổng hợp `gold_orders_daily`,
-  `gold_revenue_daily`.
+- **silver** — lọc theo `_is_valid`, bỏ cột kỹ thuật, thêm cột dẫn xuất. Vật liệu hoá thành
+  **table** ở cả hai env (DuckDB-Iceberg chưa hỗ trợ `CREATE VIEW`): `silver_orders`,
+  `silver_order_items`, `silver_customers`, `silver_products`, `silver_geography`, `silver_promotions`.
+- **gold** — star schema, **table**: `dim_customer`, `dim_product`, `dim_promotion`, `dim_date`,
+  `fact_order_items`, và 2 bảng tổng hợp `gold_orders_daily`, `gold_revenue_daily`.
+
+## Pipeline chạy từng bước
+
+```bash
+make landing          # B1. data/*.csv → Parquet trên landing zone (MinIO)
+make ingest           # B2. landing → 13 bảng bronze Iceberg (engine theo ENV)
+                      #     hoặc từng bảng: make ingest-orders
+make ingest-list      #     liệt kê các bảng đã khai
+make dbt-build        # B3. dbt build silver + gold + test (--target theo ENV)
+make dbt-unit         #     chỉ unit test (nhanh, không cần dữ liệu)
+make query            # xem thử một bảng gold
+```
+
+`make pipeline` = `landing` → `ingest` → `dbt-build`. Đổi engine chỉ bằng `ENV=prod`.
 
 ## Test
 
-Hai lớp, ở hai chỗ khác nhau vì kiểm tra hai thứ khác nhau.
+Hai lớp, hai chỗ, kiểm hai thứ khác nhau:
 
 ```bash
-pytest tests -q     # cấu trúc repo — vài giây, không cần Docker
-make duckdb-run     # dữ liệu — dbt build = tạo model VÀ test ngay sau mỗi model
-make ci-local       # đúng chuỗi mà CI chạy
+make test-repo        # cấu trúc repo — pytest tests/unit, vài giây, không cần Docker
+make dbt-test         # dữ liệu — chạy qua engine của ENV đang chọn
+make test             # cả hai
+make ci-local         # đúng chuỗi mà CI chạy (dev)
 ```
 
-**`tests/`** kiểm tra *repo có nhất quán không* — hai thứ mà không công cụ nào khác bắt được:
+- **`tests/unit/`** kiểm *repo có nhất quán không*: khai bảng trong `sources.yml` mà quên tạo
+  model SQL (và ngược lại), model thiếu cột audit / luật chất lượng, `file:` lệch `source_file`,
+  `partition_by` sai cú pháp, khai `type:` chưa có reader trong `io.py`.
+- **Test dữ liệu nằm trong dbt**, cạnh model, ở các file `_*.yml`. `dbt build` chạy test ngay sau
+  mỗi model nên silver fail thì gold không build từ dữ liệu hỏng: `not_null`/`unique`,
+  `accepted_values`, `relationships`, `accepted_range`, và
+  [test hạt fact](dbt/tests/assert_fact_order_items_grain.sql).
 
-| File | Bắt lỗi gì |
-| --- | --- |
-| `test_bronze_models.py` | Khai bảng trong `sources.yml` mà quên tạo model SQL (và ngược lại) · model thiếu cột audit hoặc luật chất lượng · `file:` lệch với `source_file` · `partition_by` sai cú pháp · khai `type:` chưa có reader trong `io.py` |
-
-Bronze từng được viết **hai lần** (13 file PySpark + 13 file SQL) và có một test canh cho hai
-bản khỏi lệch. Nhưng test đó chỉ so được *tập nhãn* `_invalid_reason`, không so được điều
-kiện bên trong — đổi `< 0` thành `<= 0` ở một bên thì nó vẫn xanh. Giờ chỉ còn **một** bản
-(Spark chạy chính file SQL mà dbt build), nên lệch không còn khả năng xảy ra và test đổi
-nhiệm vụ: từ *dò lệch* sang *kiểm khai báo đúng khuôn*.
+> **Hai thư mục tên "tests", hai nghĩa — đừng nhầm:** `tests/` ở gốc là test **cấu trúc repo**
+> (pytest); `dbt/tests/` là **singular data test** của dbt (SQL, chạy trong `dbt build`).
 
 ## Local đọc CSV, production đọc Postgres — đổi ở đâu?
 
 Đúng một chỗ: `SOURCE_READERS` trong `ingestion/common/io.py`, cộng với `type:` trong
-`sources.yml`. Model SQL, silver, gold và test dbt không đụng tới. Chi tiết kèm diff cụ thể:
-[ingestion/README.md](ingestion/README.md).
-
-> **Hai thư mục tên "tests", hai nghĩa khác nhau — đừng nhầm:**
-> `tests/` ở gốc repo là test **cấu trúc repo**, chạy bằng pytest, không cần Docker.
-> `transforms/tests/` là **singular data test** của dbt, viết bằng SQL, chạy trong `dbt build`.
-> Mỗi cái theo đúng quy ước của hệ sinh thái nó — đổi tên bên nào cũng làm người mới ngạc nhiên.
-
-**Test dữ liệu nằm trong dbt**, cạnh model, ở các file `_*.yml` — đó là chỗ đúng của chúng.
-`dbt build` chạy test ngay sau mỗi model, nên silver fail test thì gold không build từ dữ liệu
-hỏng. Gồm `not_null`/`unique` cho khoá, `accepted_values`, `relationships` (bắt dòng mồ côi),
-`accepted_range` (chặn số âm), và
-[test hạt fact](transforms/tests/assert_fact_order_items_grain.sql) (số dòng fact = silver).
-
-Chỉ chạy test dữ liệu: `make duckdb-test` hoặc `make lake-dbt-test`.
+`sources.yml`. Model SQL, silver, gold và test dbt không đụng tới.
+Chi tiết: [ingestion/README.md](ingestion/README.md).
 
 ## Thêm một bảng mới
 
 1. Khai báo trong [`ingestion/config/sources.yml`](ingestion/config/sources.yml)
-2. Tạo `transforms/models/bronze/bronze_<bảng>.sql` — **một file, hai engine cùng chạy**
-3. `pytest tests` — bắt ngay nếu hai bước trên lệch nhau
-4. `make lake-ingest-<bảng>` rồi `make lake-dbt`
+2. Tạo `ingestion/bronze_specs/bronze_<bảng>.sql` — **một file, hai engine cùng chạy**
+3. `make test-repo` — bắt ngay nếu hai bước trên lệch nhau
+4. `make ingest-<bảng>` rồi `make dbt-build`
 
 Không phải sửa Makefile: danh sách target sinh ra từ `sources.yml`.
 Hướng dẫn đầy đủ tới tận gold: [docs/them-bang-moi.md](docs/them-bang-moi.md).
@@ -269,11 +244,11 @@ Hướng dẫn đầy đủ tới tận gold: [docs/them-bang-moi.md](docs/them-
 
 | Tài liệu | Nội dung |
 | --- | --- |
-| [docs/them-bang-moi.md](docs/them-bang-moi.md) | Hướng dẫn từng bước từ CSV tới gold cho cả hai môi trường |
-| [docs/mo-hinh-du-lieu.md](docs/mo-hinh-du-lieu.md) | Sơ đồ quan hệ 13 bảng, công thức join đúng. **Đọc trước khi viết query join.** |
-| [docs/star-schema.md](docs/star-schema.md) | Thiết kế dim/fact ở gold layer, lý do thiết kế, query mẫu |
-| [docs/star-schema-ly-thuyet.md](docs/star-schema-ly-thuyet.md) | Quy trình 4 bước Kimball, bus matrix, SCD, bridge table |
-| [ingestion/README.md](ingestion/README.md) | Hợp đồng của bronze layer, cách viết connector |
-| [transforms/README.md](transforms/README.md) | Macro tương thích 2 engine, materialization theo layer |
-| [engine-runners/README.md](engine-runners/README.md) | Vì sao Spark config phải render ở entrypoint |
-| [infra/README.md](infra/README.md) | Hai stack local, và 3 thứ phải sửa trước khi lên production |
+| [docs/CURRENT_ARCHITECTURE.md](docs/CURRENT_ARCHITECTURE.md) · [TARGET](docs/TARGET_ARCHITECTURE.md) · [MIGRATION](docs/MIGRATION_PLAN.md) | Audit kiến trúc cũ → thiết kế mục tiêu → kế hoạch di trú (bản ghi thiết kế) |
+| [docs/them-bang-moi.md](docs/them-bang-moi.md) | Hướng dẫn từng bước từ CSV tới gold |
+| [docs/mo-hinh-du-lieu.md](docs/mo-hinh-du-lieu.md) | Sơ đồ quan hệ 13 bảng, công thức join. **Đọc trước khi viết query join.** |
+| [docs/star-schema.md](docs/star-schema.md) · [star-schema-ly-thuyet.md](docs/star-schema-ly-thuyet.md) | Thiết kế dim/fact ở gold, lý thuyết Kimball |
+| [ingestion/README.md](ingestion/README.md) | Hợp đồng bronze layer, cách viết connector, hai engine ingestion |
+| [dbt/README.md](dbt/README.md) | Macro tương thích 2 engine, materialization theo layer |
+| [infra/images/README.md](infra/images/README.md) | Vì sao Spark config phải render ở entrypoint |
+| [infra/README.md](infra/README.md) | Stack dùng chung + overlay theo env, và điều phải sửa khi lên production |

@@ -1,8 +1,9 @@
-name: CI — pipeline DuckDB
+name: CI — pipeline DEV (DuckDB + Iceberg + MinIO)
 
-# Chạy toàn bộ pipeline bằng môi trường nhẹ (DuckDB) trên mỗi push/PR.
-# Cùng model, cùng test với môi trường lakehouse — chỉ khác engine, nên lỗi logic
-# transform hay lỗi test dữ liệu đều bị bắt ở đây mà không cần dựng MinIO/Spark/Trino.
+# Mỗi push/PR chạy TRỌN pipeline bằng môi trường nhẹ (dev): DuckDB ingest vào Iceberg
+# trên MinIO, rồi dbt build silver/gold + test. Cùng model, cùng data contract, cùng
+# test với prod — chỉ khác execution engine. Nên lỗi logic transform hay lỗi test dữ
+# liệu đều bị bắt ở đây mà không cần dựng Trino/Spark.
 on:
   push:
     branches: [main]
@@ -10,20 +11,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  duckdb-pipeline:
-    name: bronze → silver → gold + test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Tạo .env từ mẫu
-        run: cp .env.example .env
-
-      - name: Chạy pipeline + test
-        run: make ci-local
-
+  # ---------------------------------------------------------------------------
+  # Kiểm nhanh: cú pháp code + khuôn bronze + compose hợp lệ. Không cần Docker chạy.
+  # ---------------------------------------------------------------------------
   lint:
-    name: Kiểm tra cú pháp
+    name: Lint + repo tests + compose valid
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,13 +27,36 @@ jobs:
       - name: Biên dịch code ingestion
         run: python -m compileall -q ingestion
 
-      - name: Test (đăng ký nguồn khớp connector + CSV)
+      - name: Cài test deps rồi chạy repo unit tests
         run: |
           pip install --quiet pytest pyyaml
-          pytest tests -q
+          pytest tests/unit -q
 
-      - name: Kiểm tra compose hợp lệ
+      - name: Kiểm compose hợp lệ (cả dev lẫn prod)
         run: |
-          cp .env.example .env
-          docker compose --project-directory . -f infra/local/compose.duckdb.yml config -q
-          docker compose --project-directory . -f infra/local/compose.lakehouse.yml config -q
+          docker compose --project-directory . \
+            --env-file config/.env.shared --env-file config/.env.dev \
+            -f infra/compose.base.yml -f infra/compose.dev.yml config -q
+          docker compose --project-directory . \
+            --env-file config/.env.shared --env-file config/.env.prod \
+            -f infra/compose.base.yml -f infra/compose.prod.yml config -q
+
+  # ---------------------------------------------------------------------------
+  # Chạy đúng chuỗi `make ci-local`: up -> deps -> pipeline -> test-repo -> down.
+  # ---------------------------------------------------------------------------
+  dev-pipeline:
+    name: bronze → silver → gold + test (DuckDB trên Iceberg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # test-repo trong ci-local gọi `python3 -m pytest`; cài sẵn trên runner.
+      - name: Cài pytest cho bước test-repo
+        run: pip install --quiet pytest pyyaml
+
+      - name: Chạy pipeline dev + test (make ci-local)
+        run: make ci-local

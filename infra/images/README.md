@@ -1,10 +1,10 @@
-# engine-runners/
+# infra/images/
 
 Image và cấu hình của từng **engine** chạy pipeline. Mỗi thư mục sở hữu trọn vẹn một engine:
 Dockerfile + file cấu hình của nó nằm cùng chỗ.
 
 ```text
-engine-runners/
+infra/images/
 ├── spark-runner/     ingest CSV -> bronze Iceberg
 ├── dbt-runner/       transform silver/gold (chạy được cả DuckDB lẫn Trino)
 └── trino-runner/     cấu hình catalog cho Trino (dùng image stock, không build)
@@ -36,7 +36,7 @@ Template được **mount** lúc chạy chứ không COPY vào image, nên sửa
 Một image dùng cho **cả hai môi trường**: cài sẵn `dbt-duckdb` và `dbt-trino`, chọn engine
 bằng `dbt build --target duckdb|trino`. Cùng project, cùng model, cùng test.
 
-Project dbt (`transforms/`) và `profiles.yml` được mount vào lúc chạy — image chỉ chứa
+Project dbt (`dbt/`) và `profiles.yml` được mount vào lúc chạy — image chỉ chứa
 runtime, không chứa code.
 
 ## trino-runner/

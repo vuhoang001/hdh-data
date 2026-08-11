@@ -117,7 +117,7 @@ Spike xác nhận nguyên nhân chính xác: dbt tạo `x__dbt_tmp` rồi RENAME
 transaction**; DuckDB-Iceberg từ chối rename bảng đã bị sửa trong cùng transaction.
 Autocommit thì chạy được, và DROP+CREATE lặp lại được.
 
-Fix: macro trong `transforms/macros/` override `relations/*` cho target duckdb, dùng
+Fix: macro trong `dbt/macros/` override `relations/*` cho target duckdb, dùng
 DROP + CREATE thay vì tmp + rename. Adapter dùng macro chuẩn nên đây là extension point
 được hỗ trợ — **không fork adapter, không đổi adapter**.
 
@@ -151,14 +151,14 @@ silver,gold}/` có gần như miễn phí.
 
 **Mất:** `ANALYTICS_SCHEMA` biến mất → mọi query mẫu, Makefile, docs phải cập nhật.
 
-### D7 — GIỮ tên `bronze/silver/gold` và thư mục `transforms/`
+### D7 — GIỮ tên `bronze/silver/gold` và thư mục `dbt/`
 
 Spec §5/§9 gợi ý `staging/intermediate/marts` và thư mục `dbt/`. **Đề xuất không đổi**, vì:
 
 - `bronze/silver/gold` và `staging/intermediate/marts` là **cùng một khái niệm**, khác quy ước.
 - Đổi tên đụng 40+ file model, 20+ file YAML, toàn bộ 5 tài liệu trong `docs/`, macro
   `generate_schema_name`, Makefile, và mọi query mẫu — **đổi lấy giá trị chức năng bằng 0**.
-- README hiện tại giải thích có chủ đích vì sao là `ingestion/` + `transforms/`: đó là
+- README hiện tại giải thích có chủ đích vì sao là `ingestion/` + `dbt/`: đó là
   **E-L** và **T** của ELT. Tên thư mục đang nói ra kiến trúc.
 
 Đây là quyết định của bạn — nếu muốn theo đúng quy ước dbt chuẩn, tôi đổi ở Phase 4, chi
@@ -284,7 +284,7 @@ hdh-data/
 │   │   └── spark_engine.py        ← chuyển từ job.py + session.py
 │   └── common/                    giữ: config · spec · sql_model · io · iceberg
 │
-├── transforms/                    GIỮ TÊN (D7) — dbt project
+├── dbt/                    GIỮ TÊN (D7) — dbt project
 │   ├── macros/
 │   │   ├── bronze_helpers.sql     sửa: read_csv → iceberg source
 │   │   ├── bronze_ref.sql         ✗ XOÁ (D1)

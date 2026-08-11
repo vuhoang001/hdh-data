@@ -13,7 +13,7 @@ Ranh giới cố ý:
     engine       BIẾT: cách nói chuyện với engine của mình
                  KHÔNG BIẾT: bảng nào, cột nào, luật chất lượng nào
 
-Toàn bộ business logic nằm ở transforms/models/bronze/bronze_<bảng>.sql — engine chỉ
+Toàn bộ business logic nằm ở ingestion/bronze_specs/bronze_<bảng>.sql — engine chỉ
 nhận một chuỗi SQL đã render và thực thi nó.
 
 Interface CỐ TÌNH nhỏ (5 method). Thêm method chỉ khi có nhu cầu thật, không thêm

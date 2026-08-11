@@ -45,7 +45,7 @@ Xây trên nền tảng. Đây là chỗ lý thuyết gặp dữ liệu thật v
 | Chủ đề | Nội dung | Trạng thái |
 | --- | --- | --- |
 | [Thêm một bảng mới vào pipeline](them-bang-moi.md) | Đi hết chặng CSV → bronze → silver → gold, dùng `order_items` làm ví dụ | ✅ Đã kiểm chứng |
-| [Star schema — thiết kế hiện tại](star-schema.md) | `models/gold/` có gì, mỗi quyết định vì sao chọn thế | ✅ Đã kiểm chứng |
+| [Star schema — thiết kế hiện tại](star-schema.md) | `models/marts/` có gì, mỗi quyết định vì sao chọn thế | ✅ Đã kiểm chứng |
 
 ---
 

@@ -1,7 +1,7 @@
 # dbt (artifact sinh ra khi chạy, không commit)
-transforms/target/
-transforms/dbt_packages/
-transforms/logs/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
 
 # pytest
 .pytest_cache/

@@ -3,7 +3,7 @@
 
 Ranh giới giữa hai file cấu hình, cố ý không chồng lấn:
 
-    transforms/models/bronze/bronze_<bảng>.sql   LOGIC — schema, chuẩn hoá, luật chất
+    ingestion/bronze_specs/bronze_<bảng>.sql   LOGIC — schema, chuẩn hoá, luật chất
                                                  lượng, cột dẫn xuất. dbt và Spark
                                                  cùng đọc file này.
 

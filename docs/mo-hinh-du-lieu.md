@@ -298,9 +298,6 @@ khách lúc đăng ký. Nối chúng lại là so sánh khập khiễng.
                             │ web_traffic (2013-01-01 → 2022-12-31)       │         │          │
                             ├─────────────────────────────────────────────┤         │          │
                             │ promotions (2013-01-31 → 2022-12-31)        │         │          │
-                                                                          ├──────────────────┤
-                                                                          │ sample_submission │
-                                                                          │ (KHÔNG ingest)    │
 ```
 
 Ba điều đáng chú ý:
@@ -309,8 +306,8 @@ Ba điều đáng chú ý:
   Join theo ngày sẽ ra `NULL` cho nửa cuối 2012 — dùng `left join` từ phía `orders` và đừng
   hoảng khi thấy khoảng trống đó.
 - **`customers` bắt đầu sớm hơn `orders` 6 tháng** — hợp lý, khách đăng ký trước khi mua.
-- **Mọi bảng dừng ở 2022-12-31.** `sample_submission.csv` (2023-01-01 → 2024-07-01) là khung
-  nộp kết quả dự báo, **không được ingest** vì nó không phải dữ liệu thật.
+- **Mọi bảng dừng ở 2022-12-31.** (Bộ dữ liệu gốc còn kèm một file khung dự báo 2023–2024
+  không phải dữ liệu thật — đã xoá khỏi repo vì pipeline không ingest nó.)
 
 ---
 

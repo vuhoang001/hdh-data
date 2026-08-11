@@ -1,5 +1,5 @@
 """
-Đọc model bronze DÙNG CHUNG (transforms/models/bronze/bronze_<bảng>.sql) cho phía Spark.
+Đọc model bronze DÙNG CHUNG (ingestion/bronze_specs/bronze_<bảng>.sql) cho phía Spark.
 
 Cùng MỘT file SQL được hai engine chạy:
 
@@ -97,7 +97,7 @@ def _parse_columns(raw: str, table: str) -> Dict[str, str]:
 
 
 def load(table: str, models_dir: str) -> BronzeModel:
-    """Đọc transforms/models/bronze/bronze_<table>.sql thành BronzeModel."""
+    """Đọc ingestion/bronze_specs/bronze_<table>.sql thành BronzeModel."""
     path = f"{models_dir}/bronze_{table}.sql"
     try:
         with open(path, encoding="utf-8") as fh:

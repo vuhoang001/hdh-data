@@ -3,16 +3,16 @@
 #
 # File này CỐ Ý không chứa logic biến đổi. Ranh giới:
 #
-#   transforms/models/bronze/bronze_<bảng>.sql   LOGIC — schema, chuẩn hoá, luật chất
+#   ingestion/bronze_specs/bronze_<bảng>.sql   LOGIC — schema, chuẩn hoá, luật chất
 #                                                lượng, cột dẫn xuất, cột audit.
 #                                                dbt VÀ Spark cùng chạy chính file đó.
 #   ingestion/config/sources.yml (file này)      HẠ TẦNG — nguồn lấy ở đâu, ghi Iceberg
 #                                                partition kiểu gì. dbt không cần.
 #
-# Thêm một bảng mới = thêm một mục ở đây + tạo transforms/models/bronze/bronze_<bảng>.sql.
+# Thêm một bảng mới = thêm một mục ở đây + tạo ingestion/bronze_specs/bronze_<bảng>.sql.
 # KHÔNG phải viết Python: ingest.py chạy chung cho mọi bảng.
 #
-# Makefile đọc trực tiếp file này để sinh target `make lake-ingest-<table>`, nên danh
+# Makefile đọc trực tiếp file này để sinh target `make ingest-<table>`, nên danh
 # sách bảng không bị lặp ở chỗ khác.
 #
 # Các trường:

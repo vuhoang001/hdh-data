@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nội suy template config Spark bằng biến môi trường hiện tại, rồi chạy lệnh được truyền vào.
 #
-# Nhờ bước này, engine-runners/spark-runner/spark-defaults.conf.tmpl là NƠI DUY NHẤT khai báo cấu hình Spark,
+# Nhờ bước này, infra/images/spark-runner/spark-defaults.conf.tmpl là NƠI DUY NHẤT khai báo cấu hình Spark,
 # còn giá trị thì đến từ .env — không có endpoint/bucket nào bị hardcode trong image.
 set -euo pipefail
 

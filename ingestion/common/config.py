@@ -44,8 +44,9 @@ AWS_SECRET_ACCESS_KEY = _env("AWS_SECRET_ACCESS_KEY", "change-me")
 AWS_REGION = _env("AWS_REGION", "us-east-1")
 
 # ---- Đường dẫn ---------------------------------------------------------------
-# Model bronze DÙNG CHUNG với dbt: ingestion đọc chính các file .sql mà dbt đọc.
-MODELS_DIR = _env("INGEST_MODELS_DIR", "/usr/app/dbt/bronze")
+# Đặc tả bronze: ingestion đọc các file .sql khai schema + luật chất lượng. Sống trong
+# ingestion/bronze_specs (chỉ ingestion chạy chúng; dbt đọc bronze qua source()).
+MODELS_DIR = _env("INGEST_MODELS_DIR", "/opt/ingestion/bronze_specs")
 
 # Đăng ký nguồn — cấu hình ingest mà dbt không cần (xem common/spec.py)
 SOURCES_FILE = _env("INGEST_SOURCES_FILE", "/opt/ingestion/config/sources.yml")

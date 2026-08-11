@@ -6,7 +6,7 @@ bronze dùng chung với dbt, logging, phân loại lỗi, và khung điều ph�
 
 Nó KHÔNG chứa business logic của bất kỳ bảng nào, và KHÔNG biết engine nào đang chạy.
 Schema, chuẩn hoá, luật chất lượng, cột dẫn xuất nằm ở
-transforms/models/bronze/bronze_<bảng>.sql — cùng file mà dbt đọc. Phần "chạy bằng gì"
+ingestion/bronze_specs/bronze_<bảng>.sql — cùng file mà dbt đọc. Phần "chạy bằng gì"
 nằm ở ingestion/engines/. Đó là toàn bộ ý tưởng: một bản logic, hai engine thực thi.
 
     config     : nơi duy nhất biết catalog / namespace / endpoint / đường dẫn

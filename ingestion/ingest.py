@@ -8,11 +8,11 @@ Cùng một file, cùng một luồng, hai engine. Engine chọn bằng INGESTIO
 config/.env.<môi trường>, hoặc ghi đè bằng --engine.
 
 Trước đây mỗi bảng có một file ingest_<bảng>.py viết lại bằng PySpark đúng những gì
-transforms/models/bronze/bronze_<bảng>.sql đã tả bằng SQL. Giờ chỉ còn file này: nó đọc
+ingestion/bronze_specs/bronze_<bảng>.sql đã tả bằng SQL. Giờ chỉ còn file này: nó đọc
 chính model SQL đó rồi giao cho engine chạy.
 
 Thêm một bảng mới = thêm một mục trong ingestion/config/sources.yml + một file SQL trong
-transforms/models/bronze/. Không phải viết Python.
+ingestion/bronze_specs/. Không phải viết Python.
 
 Chạy qua Makefile:
     make ingest-orders              # một bảng, môi trường đang chọn

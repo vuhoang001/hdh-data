@@ -6,7 +6,7 @@ Luồng: đọc landing -> chạy SQL dùng chung -> ghi Iceberg -> đếm -> lo
 Điều đáng chú ý là những gì KHÔNG có ở đây:
 
   - Không có schema, chuẩn hoá, luật chất lượng, cột dẫn xuất. Toàn bộ nằm trong
-    transforms/models/bronze/bronze_<bảng>.sql — chính file mà dbt đọc.
+    ingestion/bronze_specs/bronze_<bảng>.sql — chính file mà dbt đọc.
   - Không có `if env == "dev"`. Môi trường chọn ENGINE (một object), không chọn nhánh
     code. Hàm run() dưới đây không biết mình đang chạy DuckDB hay Spark.
 

@@ -31,13 +31,13 @@ services:
       ICEBERG_REST_URI: ${ICEBERG_REST_URI}
       BRONZE_NAMESPACE: ${BRONZE_NAMESPACE}
     volumes:
-      - ./engine-runners/trino-runner/catalog:/etc/trino/catalog:ro
+      - ./infra/images/trino-runner/catalog:/etc/trino/catalog:ro
     networks: [hdh]
 
   # ----------------------- Spark (ingest engine, scale) --------------------
   spark:
     build:
-      context: ./engine-runners/spark-runner
+      context: ./infra/images/spark-runner
       args:
         SPARK_BASE_IMAGE: ${SPARK_BASE_IMAGE}
         ICEBERG_VERSION: ${ICEBERG_VERSION}
@@ -71,24 +71,22 @@ services:
       # spark-submit chỉ add thư mục chứa script vào sys.path, nên phải trỏ thêm
       # vào gốc ingestion/ để "from common import ..." thấy package
       PYTHONPATH: ${SPARK_JOBS_DIR}
-      # Model bronze DÙNG CHUNG với dbt — Spark chạy chính các file .sql mà dbt đọc
-      INGEST_MODELS_DIR: ${SPARK_BRONZE_DIR}
+      # Đặc tả bronze sống trong ingestion/bronze_specs (chỉ ingestion chạy chúng), có
+      # sẵn qua mount ./ingestion bên dưới tại ${SPARK_JOBS_DIR}/bronze_specs.
+      INGEST_MODELS_DIR: ${SPARK_JOBS_DIR}/bronze_specs
       INGEST_SOURCES_FILE: ${SPARK_JOBS_DIR}/config/sources.yml
       SAMPLE_ENABLED: ${SAMPLE_ENABLED}
     volumes:
       - ./ingestion:${SPARK_JOBS_DIR}:ro
-      - ./engine-runners/spark-runner:/opt/spark/conf-template:ro
+      - ./infra/images/spark-runner:/opt/spark/conf-template:ro
       - ./data:${SPARK_DATA_DIR}:ro
-      # CHỈ ĐỌC: Spark chạy đặc tả bronze dùng chung nhưng không được sinh file gì
-      # trong đó (target/, logs/ là của container dbt, và nó chạy bằng UID khác).
-      - ./transforms/bronze:${SPARK_BRONZE_DIR}:ro
     command: ["tail", "-f", "/dev/null"]
     networks: [hdh]
 
   # ----------------------- dbt (transform + test qua Trino) ----------------
   dbt:
     build:
-      context: ./engine-runners/dbt-runner
+      context: ./infra/images/dbt-runner
       args:
         DBT_CORE_VERSION: ${DBT_CORE_VERSION}
         DBT_DUCKDB_VERSION: ${DBT_DUCKDB_VERSION}
@@ -124,11 +122,11 @@ services:
       WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
       LANDING_PREFIX: ${LANDING_PREFIX}
       SAMPLE_ENABLED: ${SAMPLE_ENABLED}
-      INGEST_MODELS_DIR: ${DBT_PROJECT_DIR}/bronze
+      INGEST_MODELS_DIR: ${INGEST_JOBS_DIR}/bronze_specs
       INGEST_SOURCES_FILE: ${INGEST_JOBS_DIR}/config/sources.yml
       PYTHONPATH: ${INGEST_JOBS_DIR}
     volumes:
-      - ./transforms:${DBT_PROJECT_DIR}
+      - ./dbt:${DBT_PROJECT_DIR}
       - ./ingestion:${INGEST_JOBS_DIR}:ro
       - ./data:${DBT_DATA_DIR}:ro
     working_dir: ${DBT_PROJECT_DIR}

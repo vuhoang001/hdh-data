@@ -40,7 +40,7 @@ sources:
     # là không còn dữ liệu mới. Không có freshness thì lỗi này chỉ lộ ra khi có người
     # hỏi "sao báo cáo tuần này giống hệt tuần trước".
     #
-    # _ingested_at do chính model bronze sinh ra (transforms/bronze/bronze_*.sql).
+    # _ingested_at do chính model bronze sinh ra (ingestion/bronze_specs/bronze_*.sql).
     # Ngưỡng đặt ở mức source, bảng con thừa kế; bảng nào nhịp khác thì ghi đè riêng.
     # =========================================================================
     config:

@@ -1,10 +1,10 @@
-# transforms/
+# dbt/
 
 Project dbt — biến bronze thành silver rồi gold. **Một project duy nhất chạy trên hai engine**,
 chọn bằng `--target duckdb|trino`.
 
 ```text
-transforms/
+dbt/
 ├── dbt_project.yml     # materialization theo layer, var data_dir
 ├── profiles.yml        # 2 target: duckdb (mặc định) + trino — giá trị lấy từ .env
 ├── packages.yml        # dbt_utils
@@ -18,7 +18,7 @@ Hai môi trường tạo bronze theo hai cách khác nhau:
 
 | | bronze đến từ đâu | silver/gold |
 | --- | --- | --- |
-| `--target duckdb` | dbt model đọc thẳng CSV (`models/bronze/`) | dbt trên DuckDB |
+| `--target duckdb` | dbt model đọc thẳng CSV (`ingestion/bronze_specs/`) | dbt trên DuckDB |
 | `--target trino` | Spark ghi Iceberg (`ingestion/`) | dbt trên Trino |
 
 Ba macro làm cho khác biệt đó biến mất khỏi code silver/gold:
@@ -35,9 +35,9 @@ Kết quả: `select * from bronze.orders` chạy y hệt ở cả hai môi trư
 thành `read_csv(...)`; ở Spark, `ingestion/common/sql_model.py` thay nó bằng tên temp view.
 Mọi thứ còn lại trong model bronze là SQL thuần, portable giữa DuckDB và Spark SQL.
 
-## `models/bronze/` dùng để làm gì nếu Spark đã ghi bronze rồi?
+## `ingestion/bronze_specs/` dùng để làm gì nếu Spark đã ghi bronze rồi?
 
-13 file trong `models/bronze/` **chỉ chạy ở target `duckdb`** (`+enabled` trong
+13 file trong `ingestion/bronze_specs/` **chỉ chạy ở target `duckdb`** (`+enabled` trong
 `dbt_project.yml`). Ở target `trino` chúng bị tắt vì Spark đã ghi Iceberg — nhưng chúng
 không phải code chết: đó là thứ làm cho môi trường nhẹ chạy được **mà không cần Spark**.
 
@@ -45,7 +45,7 @@ Và chúng cũng **không bị nhân đôi**: ở target `trino`, `ingestion/ing
 file này rồi chạy bằng `spark.sql()`. Một bản logic, hai engine thực thi.
 
 ```text
-transforms/models/bronze/bronze_orders.sql
+ingestion/bronze_specs/bronze_orders.sql
     ├─ dbt build  --target duckdb   → bảng trong hdh.duckdb
     └─ spark-submit ingest.py       → bảng Iceberg trên MinIO
 ```

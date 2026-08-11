@@ -45,7 +45,7 @@ COMPOSE = docker compose --project-directory . \
 # ---- Engine ingestion đổi theo môi trường ------------------------------------
 # ĐÂY là chỗ DUY NHẤT trong repo mà môi trường quyết định chương trình nào chạy —
 # và nó chỉ chọn RUNTIME, không chọn logic: cả hai engine chạy chính
-# transforms/models/bronze/bronze_<bảng>.sql.
+# ingestion/bronze_specs/bronze_<bảng>.sql.
 ifeq ($(INGESTION_ENGINE),spark)
   INGEST_RUN = $(COMPOSE) exec -T spark /opt/spark/bin/spark-submit $(SPARK_JOBS_DIR)/ingest.py
 else
@@ -133,7 +133,7 @@ landing:       ## B1. Đẩy nguồn lên landing zone (Parquet trên MinIO)
 ingest: $(INGEST_TARGETS)   ## B2. Landing -> bronze Iceberg (toàn bộ bảng)
 
 # MỘT script chung cho mọi bảng và mọi engine. ingest.py đọc chính
-# transforms/models/bronze/bronze_<bảng>.sql (cùng file dbt dùng) rồi chạy nó.
+# ingestion/bronze_specs/bronze_<bảng>.sql (cùng file dbt dùng) rồi chạy nó.
 ingest-%:
 	$(INGEST_RUN) --table $*
 
@@ -152,7 +152,7 @@ dbt-build:     ## B3. Build silver + gold VÀ chạy test sau mỗi model
 dbt-test:      ## Chỉ chạy test dữ liệu
 	$(DBT_RUN) test --target $(DBT_TARGET)
 
-# Unit test kiểm CÔNG THỨC SQL bằng dữ liệu bịa (models/gold/_unit_tests.yml),
+# Unit test kiểm CÔNG THỨC SQL bằng dữ liệu bịa (models/marts/_unit_tests.yml),
 # không đụng dữ liệu thật. Chạy trong vài giây nên dùng được ngay lúc đang sửa model.
 dbt-unit:      ## Chỉ chạy unit test (nhanh, không cần dữ liệu)
 	$(DBT_RUN) test --target $(DBT_TARGET) --select "test_type:unit"

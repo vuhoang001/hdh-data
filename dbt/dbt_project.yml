@@ -4,6 +4,12 @@ config-version: 2
 
 profile: hdh_dbt
 
+# Tạo sẵn namespace silver + gold trước mỗi lần build. dbt tự tạo schema đích không ổn
+# định trên catalog Iceberg REST (bỏ sót silver ở lần build sạch) — xem macro để biết chi
+# tiết. Chạy được ở cả target dev (DuckDB) lẫn prod (Trino), không rẽ nhánh môi trường.
+on-run-start:
+  - "{{ ensure_layer_schemas() }}"
+
 model-paths: ["models"]
 seed-paths: ["seeds"]
 target-path: "target"
@@ -21,13 +27,16 @@ clean-targets: ["target", "dbt_packages"]
 # Iceberg ở CẢ HAI môi trường, nên dbt luôn đọc nó qua source() và đồ thị model giống
 # hệt nhau. Xem models/_sources.yml.
 #
-# Model bronze SQL nằm ở transforms/bronze/ (KHÔNG phải models/): chúng không còn là dbt
-# model mà là đặc tả ingestion, do ingestion/engines/* chạy. Để chúng trong models/ sẽ
-# khiến dbt cố build lại thứ mà tầng ingestion vừa ghi.
+# Đặc tả bronze SQL nằm ở ingestion/bronze_specs/ (KHÔNG phải trong dbt project): chúng
+# không phải dbt model mà là đặc tả ingestion, do ingestion/engines/* chạy để ghi bronze
+# vào Iceberg. dbt chỉ ĐỌC bronze qua source() — xem models/_sources.yml.
+#
+# Thư mục model theo quy ước dbt kinh điển: staging (tầng silver) -> marts (tầng gold).
 # =============================================================================
 models:
   hdh_dbt:
-    silver:
+    # staging = tầng SILVER của medallion: làm sạch, lọc _is_valid, bỏ cột kỹ thuật.
+    staging:
       # PHẢI là table, không được là view: DuckDB-Iceberg chưa hỗ trợ CREATE VIEW
       # (báo thẳng "Not implemented Error: Create View"). Chọn table cho CẢ HAI môi
       # trường thay vì view-ở-Trino/table-ở-DuckDB, vì materialization khác nhau kéo
@@ -35,8 +44,10 @@ models:
       # Đánh đổi: tốn thêm dung lượng, và silver không còn tự động phản ánh bronze mới
       # nhất mà phải build lại — nhưng `dbt build` vốn đã luôn chạy cả chuỗi.
       +materialized: table
+      # NAMESPACE Iceberg vẫn là silver (SILVER_NAMESPACE) — chỉ thư mục dbt đổi tên.
       +schema: "{{ env_var('SILVER_NAMESPACE', 'silver') }}"
-    gold:
+    # marts = tầng GOLD của medallion: star schema, bảng business-facing.
+    marts:
       +materialized: table
       +schema: "{{ env_var('GOLD_NAMESPACE', 'gold') }}"
 
@@ -54,7 +65,7 @@ models:
 # có nhiệm vụ phản ánh trung thực nguồn kể cả khi nguồn bẩn).
 #
 # store_failures: ghi các dòng fail ra bảng thay vì chỉ đếm trong log, để mở lên xem
-# được đúng dòng nào sai. Bật theo từng test khi cần (xem gold/fact_order_items.yml).
+# được đúng dòng nào sai. Bật theo từng test khi cần (xem marts/fact_order_items.yml).
 # Bảng kết quả nằm ở schema <schema>_dbt_test__audit.
 # =============================================================================
 data_tests:

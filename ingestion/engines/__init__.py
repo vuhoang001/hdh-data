@@ -7,7 +7,7 @@ chỉ chọn RUNTIME, không chọn logic:
     dev   INGESTION_ENGINE=duckdb  ->  DuckDBIngestionEngine
     prod  INGESTION_ENGINE=spark   ->  SparkIngestionEngine
 
-Cả hai chạy CHÍNH transforms/models/bronze/bronze_<bảng>.sql — cùng file mà dbt đọc.
+Cả hai chạy CHÍNH ingestion/bronze_specs/bronze_<bảng>.sql — cùng file mà dbt đọc.
 Không engine nào chứa business logic của bất kỳ bảng nào.
 
 Import ĐỘNG trong create(): pyspark chỉ được nạp khi thật sự dùng Spark, nhờ vậy môi

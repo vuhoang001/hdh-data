@@ -49,7 +49,7 @@ thể so sánh, không thể chuyển qua lại. Đây là vấn đề gốc mà
 | Module | Vai trò | Đánh giá |
 | --- | --- | --- |
 | `ingestion/` | CSV → Iceberg bronze (chỉ lakehouse) | **Tốt, giữ lại** — thiết kế đã gần đúng |
-| `transforms/` | dbt project: bronze/silver/gold | **Tốt, giữ lại** — refactor nhẹ |
+| `dbt/` | dbt project: bronze/silver/gold | **Tốt, giữ lại** — refactor nhẹ |
 | `engine-runners/` | Dockerfile + config từng engine | Giữ, bổ sung |
 | `infra/local/` | 2 docker compose stack | Hợp nhất lại |
 | `tests/` | pytest kiểm cấu trúc repo | **Tốt, giữ lại** |
@@ -77,7 +77,7 @@ Chỉ có bước thực thi là gắn chặt Spark.
 
 ### 2.3 Transformation đang làm gì?
 
-dbt project `transforms/` (profile `hdh_dbt`), 3 tầng:
+dbt project `dbt/` (profile `hdh_dbt`), 3 tầng:
 
 | Tầng | Số model | Materialization | Ghi chú |
 | --- | --- | --- | --- |
@@ -114,7 +114,7 @@ web_traffic`) **dừng lại ở bronze**, không có silver/gold.
 | **MinIO** | `compose.lakehouse.yml`, `minio/init-buckets.sh`, `spark-defaults.conf.tmpl` | **Chỉ lakehouse** |
 | **DuckDB** | `profiles.yml` target `duckdb`, `macros/bronze_helpers.sql` (read_csv), Makefile `duckdb-*` | **Chỉ dev** |
 | **Trino** | `profiles.yml` target `trino`, `trino-runner/catalog/`, Makefile `lake-*` | **Chỉ lakehouse** |
-| **dbt** | `transforms/` — **DÙNG CHUNG CẢ HAI** (2 target, 1 bộ model) | cả hai ✓ |
+| **dbt** | `dbt/` — **DÙNG CHUNG CẢ HAI** (2 target, 1 bộ model) | cả hai ✓ |
 
 ### 2.11 Business logic nằm trong Python không?
 
@@ -134,7 +134,7 @@ Ngoại lệ duy nhất: `sources.yml` chứa `extra_metrics` (`"ngày bán lỗ
 
 **Có — đúng chỗ.** Toàn bộ: schema, chuẩn hoá, luật chất lượng, cột dẫn xuất, star schema.
 
-Điểm cần biết: `transforms/models/bronze/bronze_*.sql` **bị ràng buộc phải là SQL portable**
+Điểm cần biết: `ingestion/bronze_specs/bronze_*.sql` **bị ràng buộc phải là SQL portable**
 (chạy giống nhau trên DuckDB + Spark SQL). `macros/bronze_helpers.sql` ghi rõ ràng buộc này
 và liệt kê các hàm đã dùng đạt yêu cầu.
 
@@ -158,7 +158,7 @@ entrypoint, dbt `env_var()`, Python `os.environ`, make `-include`).
 | --- | --- | --- |
 | `macros/bronze_ref.sql` | `{% if target.type == 'duckdb' %} ref() {% else %} source() {% endif %}` | Rẽ nhánh môi trường **trong business logic** |
 | `dbt_project.yml` | `bronze: +enabled: "{{ target.type == 'duckdb' }}"` | Cả một tầng chỉ tồn tại ở 1 env |
-| `models/silver/_sources.yml` | `enabled: "{{ target.type != 'duckdb' }}"` | Nghịch đảo của trên |
+| `models/staging/_sources.yml` | `enabled: "{{ target.type != 'duckdb' }}"` | Nghịch đảo của trên |
 | `profiles.yml` | fallback `'hdh_local.duckdb'`, `'../data'` | Hardcode đường dẫn host (có comment giải thích) |
 | `compose.lakehouse.yml` | `TRINO_PORT: 8080` | Hardcode (có comment: cổng trong network) |
 
@@ -179,7 +179,7 @@ cho local, nhưng khi lên production cần secret manager thật chứ không p
 
 | Thành phần | Chỉ chạy ở | Ghi chú |
 | --- | --- | --- |
-| 13 model `models/bronze/*.sql` (khi dbt build) | DEV | `+enabled` tắt ở trino |
+| 13 model `ingestion/bronze_specs/*.sql` (khi dbt build) | DEV | `+enabled` tắt ở trino |
 | `macros/bronze_helpers.sql` → `read_csv()` | DEV | Cú pháp riêng DuckDB |
 | `source('bronze', ...)` trong `_sources.yml` | PROD | Tắt ở duckdb |
 | `ingestion/` toàn bộ | PROD | Cần Spark — **DEV KHÔNG CÓ ĐƯỜNG NÀO GHI BRONZE** |
@@ -270,7 +270,7 @@ Tôi đã cô lập nguyên nhân bằng ba phép thử:
 
 → **Nguyên nhân là transaction**, không phải bản thân RENAME. Fix nằm ở tầng project:
 adapter dùng các macro chuẩn `relations/{create_intermediate, rename_intermediate,
-replace, drop}` — đều override được bằng macro trong `transforms/macros/`. Không phải
+replace, drop}` — đều override được bằng macro trong `dbt/macros/`. Không phải
 fork adapter, không phải đổi adapter.
 
 ---
@@ -350,7 +350,7 @@ ingestion/
     session.py                 SparkSession + logger
     iceberg.py                 create_namespace / write_iceberg_table / count
 
-transforms/
+dbt/
   dbt_project.yml              vars.data_dir, materialization + severity theo tầng
   profiles.yml                 2 target: duckdb | trino
   macros/
@@ -358,9 +358,9 @@ transforms/
     bronze_ref.sql             bronze() → ref() hoặc source()    [rẽ nhánh env]
     portable_dates.sql         date_format↔strftime, day_of_week↔isodow, ...
     generate_schema_name.sql   /  generate_alias_name.sql
-  models/bronze/               13 .sql + _bronze.yml
-  models/silver/               6 .sql + 6 .yml + _sources.yml (freshness)
-  models/gold/                 7 .sql + 6 .yml + _unit_tests.yml
+  ingestion/bronze_specs/               13 .sql + _bronze.yml
+  models/staging/               6 .sql + 6 .yml + _sources.yml (freshness)
+  models/marts/                 7 .sql + 6 .yml + _unit_tests.yml
   tests/                       5 singular test .sql
   tests/generic/               not_future_date.sql, sum_equals.sql
 
